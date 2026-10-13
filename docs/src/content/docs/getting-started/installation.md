@@ -4,9 +4,75 @@ title: Installation
 
 # Installation
 
-Install the `wiqd` CLI and all dependencies with a single command.
+WIQD supports two alternative installation paths:
 
-## One-Liner Install (Recommended)
+| Path                     | Start here when                                                              | Installs                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Plugin-first agentic** | You want to begin in GitHub Copilot CLI or Claude Code                       | The public `wiqd@wiqd` plugin from [`microsoft/wiqd`](https://github.com/microsoft/wiqd) |
+| **Installation script**  | You want direct `wiqd` shell commands and VS Code validation | The WIQD CLI, optional VS Code extension, and public plugin for detected native hosts |
+
+## Path 1: Install from the marketplace
+
+Install a supported agent host first:
+
+- [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
+- Claude Code
+
+Then add the public marketplace and install WIQD for your chosen host.
+
+### GitHub Copilot CLI
+
+```text
+copilot plugin marketplace add microsoft/wiqd
+copilot plugin install wiqd@wiqd
+```
+
+### Claude Code
+
+```text
+claude plugin marketplace add microsoft/wiqd
+claude plugin install wiqd@wiqd
+```
+
+Start a new host session after installation. Marketplace installation does not
+install the `wiqd` CLI, and you do not need the CLI to begin agentic or
+file-based authoring. If you later need direct lifecycle commands, use the
+separate [installation-script path](#path-2-use-the-installation-script).
+
+### Migrating from a CLI-composed plugin
+
+The WIQD CLI no longer exposes host-plugin management commands. The installer
+can migrate a proven WIQD-owned local marketplace to the public source, but
+stops on unverified local ownership or a conflicting requested marketplace binding.
+Other remote registrations stay untouched and do not block installation. It never
+deletes your plugin source directories. Extension activation does not change host plugins.
+
+Copilot may report that uninstall disabled a local live plugin without removing
+its files. The installer handles that specific WIQD state by unregistering the
+owned local marketplace without force, then installing the public plugin. Other
+plugins that reference the marketplace still block migration, even if disabled.
+
+The installer reads native JSON inventories from both hosts. Use host versions
+that support `plugin marketplace list --json` and `plugin list --json`.
+If a required JSON command is unsupported, update that host and rerun the
+installer; unreadable inventory stops plugin changes rather than being treated
+as an empty installation.
+
+Before switching an existing installation, inspect your chosen host's native
+plugin and marketplace inventory to identify the actual source. An old local
+deployment may share the `wiqd@wiqd` name with the public marketplace plugin;
+the name alone does not prove the source is correct. Use the host's native
+uninstall flow for that old deployment, remove or rebind its old local
+marketplace entry, then follow the marketplace commands above. Start a new
+host session. Do not delete configuration directories or run a blanket cleanup.
+
+The `wiqd component plugin` subtree, `wiqd install plugin`,
+`wiqd uninstall plugin`, and `wiqd install --status` have been removed.
+Bare `wiqd install` no longer installs a plugin. VS Code remains managed with
+`wiqd component vscode install|uninstall|info`; `wiqd plugin create` and other
+Microsoft 365 business-plugin commands are unchanged.
+
+## Path 2: Use the installation script
 
 The fastest way to get started — installs Node.js (if needed), the `wiqd` CLI, and the VS Code extension:
 
@@ -60,7 +126,51 @@ The installer will:
 3. **Verify** — confirms `wiqd --version` works, then `wiqd doctor` reconciles managed
    extension owners and reports targeted remediation when needed
 4. **VS Code extension** — installs the Work IQ extension for real-time validation
-5. **Copilot CLI plugin** — deploys the wiqd plugin for GitHub Copilot CLI (skip with `-SkipPlugin` / `--skip-plugin`)
+
+5. **Host plugins** — installs or updates the public plugin for detected native
+  Copilot and Claude hosts. It does not install either host. Use `-SkipPlugin`
+  (PowerShell) or `--skip-plugin` (Bash) to skip this step.
+
+The installer manages plugins with native PowerShell or bash functions,
+independent of the installed CLI version. Bash reuses the Node.js runtime verified
+earlier in the installation for plugin inventory and migration checks. The parser
+is embedded in the downloaded script; no `jq` or separate helper download is
+needed. PowerShell uses its built-in JSON parser. Skipping plugin installation,
+including when no hosts are detected, does not require a parser.
+Conflicting plugin sources require manual resolution; forcing a CLI
+reinstall does not bypass the plugin ownership checks. A plugin failure leaves
+the verified CLI installed but returns a failure result.
+
+Successful bootstrap installs record their hosted installer in
+`~/.wiqd/install-method.json`. `wiqd update` reuses that installer to upgrade,
+downgrade, or repair the CLI and its extension packages. Plugin updates follow
+the installer's defaults; `wiqd update --skip-plugin` skips that work without
+disabling installed plugins. If your install
+predates this marker, rerun your intended bootstrap once with `-SkipPlugin`
+(PowerShell) or `--skip-plugin` (Bash). Missing provenance uses the public
+installer; invalid provenance requires rerunning the intended bootstrap rather
+than silently switching sources.
+
+## After installation
+
+The installer's Quick Start begins with a standalone plugin:
+
+```text
+wiqd plugin create --name my-plugin
+cd my-plugin
+wiqd plugin validate
+wiqd plugin provision --env local
+```
+
+Sign in with `wiqd auth login --interactive` before provisioning. The `local`
+environment is provisioned to your Microsoft 365 tenant; it is not an offline
+deployment.
+
+If host-plugin installation succeeded, start a new host session; no reinstall is needed.
+If skipped or no host was detected, install the marketplace plugin manually.
+If installation failed, follow the reported remediation and retry.
+Success confirms the native install command completed, not that individual skills were tested.
+See [Build a Plugin](/getting-started/build-a-plugin/) for the complete workflow.
 
 ## Pass parameters to the bootstrap installer
 
@@ -75,7 +185,8 @@ The script-block-wrapped form `iex "& { $(irm 'URL') } -Flag"` is what makes it 
 | PowerShell flag | Bash equivalent | Description |
 |-----------------|-----------------|-------------|
 | `-SkipVSCode` | `--skip-vscode` | Skip the VS Code extension install step |
-| `-SkipPlugin` | `--skip-plugin` | Skip the Copilot CLI plugin install step |
+| `-SkipPlugin` | `--skip-plugin` | Skip all host-plugin installation, update, and migration work |
+| `-PluginNonFatal` | `--plugin-non-fatal` | Return exit `76` instead of `1` when plugin installation fails after CLI verification. Cancellation remains `130` |
 | `-Insiders` | `--insiders` | Install the extension in VS Code Insiders |
 | `-Force` | `--force` | Reinstall even if components are already present |
 | `-NodeVersion 24` | `--node-version 24` | Specify the Node.js major version (default: `24`) |
@@ -88,9 +199,6 @@ The script-block-wrapped form `iex "& { $(irm 'URL') } -Flag"` is what makes it 
 ```powershell
 # Install without VS Code extension
 iex "& { $(irm 'https://aka.ms/wiqd/install.ps1') } -SkipVSCode"
-
-# Install without Copilot CLI plugin
-iex "& { $(irm 'https://aka.ms/wiqd/install.ps1') } -SkipPlugin"
 
 # Install for VS Code Insiders
 iex "& { $(irm 'https://aka.ms/wiqd/install.ps1') } -Insiders"
@@ -108,9 +216,6 @@ iex "& { $(irm 'https://aka.ms/wiqd/install.ps1') } -Version '0.1.9'"
 # Install without VS Code extension
 curl -fsSL https://aka.ms/wiqd/install.sh | bash -s -- --skip-vscode
 
-# Install without Copilot CLI plugin
-curl -fsSL https://aka.ms/wiqd/install.sh | bash -s -- --skip-plugin
-
 # Install for VS Code Insiders
 curl -fsSL https://aka.ms/wiqd/install.sh | bash -s -- --insiders
 
@@ -123,7 +228,7 @@ curl -fsSL https://aka.ms/wiqd/install.sh | bash -s -- --version 0.1.9
 
 ## npm
 
-`wiqd` is published to public npm as [`@microsoft/wiqd`](https://www.npmjs.com/package/@microsoft/wiqd). The one-liner installers above are still the recommended path (they also handle Node.js, the VS Code extension, and the Copilot CLI plugin), but a manual install works too:
+`wiqd` is published to public npm as [`@microsoft/wiqd`](https://www.npmjs.com/package/@microsoft/wiqd). The one-liner installers above are still the recommended path (they also handle Node.js and the VS Code extension), but a manual install works too. The npm package does not contain a local-composition `plugin/` payload:
 
 ```bash
 npm install -g @microsoft/wiqd
