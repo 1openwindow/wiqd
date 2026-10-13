@@ -67,6 +67,12 @@ Deploy the agent to an [environment](/concepts/environments/). The first run cre
 wiqd agent provision --env local
 ```
 
+Provision validates the package references it is about to upload. DA-only
+`agent_skills[].folder` entries require
+`wiqd config flags set agent-skills true`; local `worker_agents[].file` entries are rejected in
+favor of published `worker_agents[].id` references. WIQD follows the DA file paths declared by
+`appPackage/manifest.json` and never assumes a fixed DA filename.
+
 ### 5. Package
 
 Build the distributable `.zip` for sideloading or upload.
@@ -75,6 +81,13 @@ Build the distributable `.zip` for sideloading or upload.
 wiqd agent package
 ```
 
+Package applies the same fail-fast reference checks before fx-core starts. Top-level
+`agentSkills[]` Cowork skills and DA-manifest `agent_skills[]` Chat skills remain separate sets;
+dual registration is not required. See [`wiqd agent package`](/cli/agent/agent-package/) for the
+full contract. Package fails closed when `appPackage/.generated/manifest.json` exists or the active
+lifecycle configuration contains `typeSpec/compile`, because the pinned SDK can otherwise replace
+the manifest WIQD validated.
+
 ### 6. Publish
 
 Push the package to the org catalog so other users can install it.
@@ -82,6 +95,14 @@ Push the package to the org catalog so other users can install it.
 ```bash
 wiqd agent publish --env prod
 ```
+
+Publish applies the same package-reference checks because fx-core builds the
+package before catalog submission. Enable `agent-skills` for DA-only skill
+folders, and use published `worker_agents[].id` references instead of local
+Worker files. With `--manifest`, validation and packaging both use that exact
+contained app manifest and resolve its references from the manifest's parent
+directory; without it they use `appPackage/manifest.json`. Normal publish uses
+the same generated/TypeSpec fail-closed rule as package.
 
 ### 7. Monitor & iterate
 

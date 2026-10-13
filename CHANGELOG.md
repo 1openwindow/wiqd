@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.18.0] — 2026-10-13
+
+> **Public preview.** wiqd is in preview; commands, output, and packaging may change before general availability.
+
+### Breaking Changes
+
+- retire CLI-managed host plugins
+
+### Features
+
+- expose tenant consistency diagnostics
+- add standalone plugin catalog publish
+- coordinate Azure OpenAPI servers
+- run Manifest and Marketplace through runtime APIs
+
+### Fixes
+
+- reject trailing control characters in tenant groups
+- harden publish dry-run safety
+- validate manifest before publish
+- route publish dry-run text through renderer
+- avoid direct renderer console invocation
+- clarify provider account login guidance
+- treat Cowork plugin requests as in-scope plugin work
+- exclude GitHub Copilot CLI plugins from M365 plugin routing
+- execute auth checks and correct install routing
+- explain invalid project path
+- preserve invalid project path
+- update expired managed eval CLI to 1.18.0
+- reject unprovisioned deletion
+- prevent MCP credentials in JSON output
+- reject unsupported DA packaging references
+- address packaging review findings
+- validate selected publish manifest
+- close packaging reference gaps
+- replay bootstrap provenance to align plugin updates
+
 ## [0.17.0] — 2026-09-28
 
 > **Public preview.** wiqd is in preview; commands, output, and packaging may change before general availability.

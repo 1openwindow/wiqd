@@ -100,12 +100,6 @@ $script:InstallUrl = 'https://aka.ms/wiqd/install.ps1'
 $MinNodeVersion = [version]"24.15.0"
 $WiqdPackage = "@microsoft/wiqd"
 $VSCodeExtensionId = "Microsoft.wiqd"
-# Some install paths activate additional extensions as part of the same run,
-# so the plugin-compose step below must force a rebuild even when `wiqd`
-# itself is already up to date (a plain compose would otherwise leave the
-# previously-composed skill set deployed). Declared here, in the shared area,
-# so it evaluates to falsy in the 3P mirror where no setter ever runs.
-$script:PluginForceRecompose = $false
 
 # The canonical public npm registry used only by explicit recovery paths and
 # trusted copyable hints. Normal installer flows do not pin registry selection.
@@ -131,7 +125,7 @@ $script:FailedPluginHosts = @()
 
 
 # Stamped by sync-version.ps1 — do not edit manually.
-$script:WiqdVersion = "0.17.0"
+$script:WiqdVersion = "0.18.0"
 
 
 # nvm4w ships npm.ps1 which uses $MyInvocation.InvocationName to parse args.
@@ -220,6 +214,367 @@ function Invoke-Native {
         $global:LASTEXITCODE = $entryLastExitCode
     }
 }
+
+# native-plugin:start
+function Get-WiqdPluginHostPath {
+    param([string]$Cli)
+    $override = [Environment]::GetEnvironmentVariable("$($Cli.ToUpperInvariant())_PATH")
+    if ($override) { return $override }
+    $command = Get-Command $Cli -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return $command.Source }
+    return $null
+}
+
+function Invoke-WiqdPluginHost {
+    param([string]$Cli, [string[]]$Arguments)
+    $binary = Get-WiqdPluginHostPath $Cli
+    if (-not $binary) { throw "$Cli is unavailable. Install the native host, then rerun the installer." }
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $binary
+    $quoted = @($Arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' '
+    $start.Arguments = $quoted
+    if ([IO.Path]::GetExtension($binary) -in @('.cmd', '.bat')) {
+        if ($binary -match '["%&|<>^!\r\n]') { throw 'Unsafe native host launcher path.' }
+        $start.FileName = $env:ComSpec
+        $start.Arguments = '/d /s /c ""' + $binary + '" ' + $quoted + '"'
+    }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $start.EnvironmentVariables['CI'] = 'true'
+    $timeout = 60000
+    $configured = [Environment]::GetEnvironmentVariable("WIQD_$($Cli.ToUpperInvariant())_TIMEOUT")
+    if ($configured -and ((-not [int]::TryParse($configured, [ref]$timeout)) -or $timeout -le 0)) {
+        throw "Invalid WIQD_$($Cli.ToUpperInvariant())_TIMEOUT. Use a positive number of milliseconds."
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    $started = $false
+    try {
+        $started = $process.Start()
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $process.WaitForExit(100)) {
+            if ($timer.ElapsedMilliseconds -ge $timeout) { throw "Plugin setup failed:`n  $Cli $($Arguments -join ' ')`nError: $Cli timed out.`nLet other plugin operations finish, then rerun this installer." }
+        }
+        $code = $process.ExitCode
+        if ($code -in @(130, -1073741510)) { $code = 130 }
+        return [pscustomobject]@{ ExitCode = $code; StdOut = $stdout.GetAwaiter().GetResult(); StdErr = $stderr.GetAwaiter().GetResult(); Command = "$Cli $($Arguments -join ' ')" }
+    } finally {
+        if ($started -and -not $process.HasExited) {
+            if ($PSVersionTable.PSVersion.Major -ge 7) { $process.Kill($true) }
+            else { Invoke-Native { & taskkill /PID $process.Id /T /F } | Out-Null }
+            $process.WaitForExit()
+        }
+        $process.Dispose()
+    }
+}
+
+function Assert-WiqdPluginHostSuccess {
+    param($Result, [string]$InventoryCli)
+    if ($Result.ExitCode -ne 0) {
+        $message = "Plugin setup failed:`n  $($Result.Command)`nError: $($Result.StdErr.Trim())"
+        if ($Result.ExitCode -eq 130) { $message = "Plugin setup cancelled:`n  $($Result.Command)" }
+        else {
+            if ($InventoryCli) { $message += "`nCannot read $InventoryCli JSON inventory. Update $InventoryCli to a version supporting native plugin/marketplace list --json." }
+            $message += "`nResolve the reported error, then rerun this installer."
+        }
+        $failure = [InvalidOperationException]::new($message)
+        $failure.Data['ExitCode'] = if ($Result.ExitCode -eq 130) { 130 } else { 1 }
+        throw $failure
+    }
+}
+
+function ConvertFrom-WiqdMarketplaceList {
+    param([string]$Cli, [string]$Text)
+    $Text = $Text.TrimStart([char]0xFEFF)
+    if ($Text.Trim() -notmatch '^\[') { throw 'Expected JSON marketplace array.' }
+    $entries = @($Text | ConvertFrom-Json -ErrorAction Stop)
+    foreach ($entry in $entries) {
+        if ($entry -isnot [pscustomobject] -or $entry.name -isnot [string] -or -not $entry.name.Trim() -or $entry.name -match '[\s@]') { throw 'Invalid JSON marketplace entry.' }
+        if ($Cli -eq 'copilot') {
+            if ($entry.source -isnot [string] -or $entry.source -cnotmatch '^(GitHub|Local): (.+)$' -or $entry.isDefault -isnot [bool]) { throw 'Invalid Copilot JSON marketplace entry.' }
+            $kind = $Matches[1]
+            $source = $Matches[2]
+        } elseif ($Cli -eq 'claude') {
+            switch -CaseSensitive ($entry.source) {
+                'github' { $kind = 'GitHub'; $source = $entry.repo }
+                'directory' { $kind = 'Directory'; $source = $entry.path }
+                'url' { $kind = 'URL'; $source = $entry.url }
+                default { throw 'Unsupported Claude JSON marketplace source.' }
+            }
+        } else { throw 'Unknown inventory host.' }
+        if ($source -isnot [string] -or -not $source.Trim() -or $source -match '[\r\n\x00]') { throw 'Invalid JSON marketplace source.' }
+        [pscustomobject]@{ name = $entry.name; kind = $kind; source = $source }
+    }
+}
+
+function ConvertFrom-WiqdNativePluginList {
+    param([string]$Cli, [string]$Text)
+    $Text = $Text.TrimStart([char]0xFEFF)
+    if ($Text.Trim() -notmatch '^\[') { throw "Expected $Cli JSON plugin array." }
+    $entries = @($Text | ConvertFrom-Json -ErrorAction Stop)
+    foreach ($entry in $entries) {
+        if ($entry -isnot [pscustomobject] -or $entry.version -isnot [string] -or -not $entry.version.Trim()) { throw "Invalid $Cli JSON plugin inventory." }
+        if ($Cli -eq 'claude') {
+            if ($entry.id -isnot [string] -or -not $entry.id.Trim() -or ($entry.PSObject.Properties['scope'] -and $entry.scope -isnot [string]) -or ($entry.PSObject.Properties['enabled'] -and $entry.enabled -isnot [bool])) { throw 'Invalid Claude JSON plugin inventory.' }
+            $entry
+        } elseif ($Cli -eq 'copilot') {
+            if ($entry.name -isnot [string] -or -not $entry.name.Trim() -or $entry.name -match '[\s@]' -or $entry.marketplace -isnot [string] -or $entry.marketplace -match '[\s@]' -or $entry.enabled -isnot [bool] -or @('installed', 'live', 'builtin', 'external') -cnotcontains $entry.source) { throw 'Invalid Copilot JSON plugin inventory.' }
+            $id = $entry.name
+            if ($entry.marketplace) { $id += '@' + $entry.marketplace }
+            [pscustomobject]@{ id = $id; version = $entry.version; localMarketplace = $entry.source -ceq 'live'; enabled = $entry.enabled }
+        } else { throw 'Unknown inventory host.' }
+    }
+}
+
+function Get-WiqdNativePluginList {
+    param([string]$Cli)
+    $result = Invoke-WiqdPluginHost $Cli @('plugin', 'list', '--json')
+    if ($Cli -eq 'claude') {
+        if ($result.ExitCode -eq 1 -and $result.StdErr.Trim() -match '(?im)^(?:error:\s*)?unknown (?:command [''"]list[''"]|option [''"]--json[''"])(?:\s|$)') {
+            $registry = Join-Path $HOME '.claude/plugins/installed_plugins.json'
+            if (-not (Test-Path -LiteralPath $registry)) { return }
+            $data = Get-Content -LiteralPath $registry -Raw | ConvertFrom-Json
+            if (-not $data.plugins -or $data.plugins -is [array] -or $data.plugins -isnot [pscustomobject]) { throw 'Invalid Claude plugin registry.' }
+            foreach ($property in $data.plugins.PSObject.Properties) {
+                if ($property.Value -isnot [array] -or $property.Value.Count -eq 0) { throw 'Incomplete Claude plugin registry.' }
+                foreach ($entry in $property.Value) {
+                    if ($entry.version -isnot [string] -or $entry.scope -isnot [string]) { throw 'Incomplete Claude plugin registry.' }
+                    [pscustomobject]@{ id = $property.Name; version = $entry.version; scope = $entry.scope }
+                }
+            }
+            return
+        }
+    }
+    Assert-WiqdPluginHostSuccess $result $Cli
+    ConvertFrom-WiqdNativePluginList $Cli $result.StdOut
+}
+
+function Test-WiqdPluginSourcePath {
+    param([string]$Source, [string]$Expected)
+    try {
+        $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        return [string]::Equals([IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar), [IO.Path]::GetFullPath($Expected).TrimEnd([IO.Path]::DirectorySeparatorChar), $comparison)
+    }
+    catch { return $false }
+}
+
+function Test-WiqdPublicPluginSource {
+    param([string]$Source)
+    $normalized = $Source.Trim().Replace('\', '/') -replace '^git\+', '' -replace '^https?://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git/?$', '' -replace '/$', ''
+    return $normalized -eq 'microsoft/wiqd'
+}
+
+function Test-WiqdOwnedPluginSource {
+    param([string]$Source)
+    if ($env:WIQD_MARKETPLACE_DIR) { return $false }
+    $root = Join-Path $HOME '.wiqd/marketplace/wiqd'
+    if (-not (Test-WiqdPluginSourcePath $Source $root)) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $false }
+        foreach ($relative in @('.github/plugin/plugin.json', '.claude-plugin/plugin.json')) {
+            $manifest = Join-Path $root $relative
+            $current = $manifest
+            while ($current) {
+                $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+                $parent = [IO.Path]::GetDirectoryName($current)
+                if ($parent -eq $current) { break }
+                $current = $parent
+            }
+            if ((Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).name -cne 'wiqd') { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Test-WiqdPluginManifest {
+    param([string]$Cli)
+    if ($Cli -eq 'copilot') {
+        return Test-Path -LiteralPath (Join-Path $HOME '.copilot/installed-plugins/wiqd/wiqd/.github/plugin/plugin.json') -PathType Leaf
+    }
+    $cache = Join-Path $HOME '.claude/plugins/cache/wiqd/wiqd'
+    $manifests = @(Get-ChildItem -LiteralPath $cache -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '.claude-plugin/plugin.json') -PathType Leaf })
+    return $manifests.Count -gt 0
+}
+
+function Get-WiqdPluginInventory {
+    $legacy = if ($env:WIQD_MARKETPLACE_DIR) { $env:WIQD_MARKETPLACE_DIR } else { Join-Path $HOME '.wiqd/marketplace/wiqd' }
+    foreach ($cli in @('copilot', 'claude')) {
+        if (-not (Get-WiqdPluginHostPath $cli)) {
+            if (Test-WiqdPluginManifest $cli) { throw "$cli is unavailable but WIQD plugin state exists. Restore the host before retrying." }
+            continue
+        }
+        $result = Invoke-WiqdPluginHost $cli @('plugin', 'marketplace', 'list', '--json')
+        Assert-WiqdPluginHostSuccess $result $cli
+        $markets = @(ConvertFrom-WiqdMarketplaceList $cli $result.StdOut)
+        $plugins = @(Get-WiqdNativePluginList $cli)
+        $wiqd = @($plugins | Where-Object { $_.id -ceq 'wiqd' -or $_.id -clike 'wiqd@*' })
+        $relevant = @($markets | Where-Object { $_.name -ceq 'wiqd' -or @($wiqd | ForEach-Object { $_.id -replace '^wiqd@', '' }) -ccontains $_.name -or (Test-WiqdPublicPluginSource $_.source) -or (Test-WiqdPluginSourcePath $_.source $legacy) })
+        $binding = @($markets | Where-Object { $_.name -ceq 'wiqd' })
+        $target = @($wiqd | Where-Object { $_.id -ceq 'wiqd@wiqd' })
+        $local = @($relevant | Where-Object { $_.kind -in @('Local', 'Directory') -or (Test-WiqdPluginSourcePath $_.source $legacy) })
+        $state = 'absent'
+        $reason = ''
+        $targetError = ''
+        if ($binding.Count -gt 1 -or $target.Count -gt 1) { $targetError = 'Requested WIQD plugin or marketplace identity is duplicated.' }
+        elseif ($binding.Count -eq 1) {
+            if (Test-WiqdPublicPluginSource $binding[0].source) { $state = 'selected' }
+            else { $targetError = "marketplace 'wiqd' points to $($binding[0].source | ConvertTo-Json -Compress)." }
+        }
+        if ($local.Count -gt 0) {
+            $state = 'conflict'
+            $reason = 'Local WIQD plugin ownership cannot be verified.'
+            if ($local.Count -eq 1 -and $binding.Count -eq 1 -and $local[0].name -ceq 'wiqd' -and $target.Count -eq 1 -and (Test-WiqdOwnedPluginSource $local[0].source)) {
+                if (@($plugins | Where-Object { $_.id -clike '*@wiqd' -and $_.id -cne 'wiqd@wiqd' }).Count -gt 0) { $reason = "Other plugins also use marketplace 'wiqd'." }
+                else { $state = 'local'; $targetError = '' }
+            }
+        }
+        if (@($wiqd | Where-Object { $_.id -ceq 'wiqd' -or @($markets.name) -cnotcontains ($_.id -replace '^wiqd@', '') }).Count -gt 0) {
+            $state = 'conflict'; $reason = 'WIQD plugin marketplace identity is missing or ambiguous.'
+        }
+        if ($cli -eq 'claude' -and @($target | Where-Object { $_.scope -cne 'user' }).Count -gt 0) {
+            $targetError = 'Claude WIQD scope is not user or cannot be determined.'
+            if ($state -eq 'local') { $state = 'conflict'; $reason = $targetError }
+        }
+        [pscustomobject]@{ cli = $cli; state = $state; marketplaces = $markets; plugins = $plugins; reason = $reason; targetError = $targetError }
+    }
+}
+
+function Get-WiqdPluginRecovery {
+    param($Current, [switch]$AfterUninstall)
+    $cli = $Current.cli
+    $legacy = if ($env:WIQD_MARKETPLACE_DIR) { $env:WIQD_MARKETPLACE_DIR } else { Join-Path $HOME '.wiqd/marketplace/wiqd' }
+    $wiqd = @($Current.plugins | Where-Object { $_.id -ceq 'wiqd' -or $_.id -clike 'wiqd@*' })
+    $markets = @($Current.marketplaces | Where-Object { $_.name -ceq 'wiqd' -or @($wiqd | ForEach-Object { $_.id -replace '^wiqd@', '' }) -ccontains $_.name -or (Test-WiqdPublicPluginSource $_.source) -or (Test-WiqdPluginSourcePath $_.source $legacy) })
+    $plugins = @($Current.plugins | Where-Object { $_.id -ceq 'wiqd' -or $_.id -clike 'wiqd@*' -or @($markets.name) -ccontains ($_.id -replace '^.*@', '') })
+    $lines = @()
+    foreach ($market in $markets) { $lines += "Marketplace: $($market.name | ConvertTo-Json -Compress) ($($market.source | ConvertTo-Json -Compress))" }
+    $lines += "Affected plugins: $(if ($plugins.Count) { (@($plugins | ForEach-Object { $_.id | ConvertTo-Json -Compress }) -join ', ') } else { 'none' })"
+    $lines += 'Inspect the current setup:'
+    $lines += "  $cli plugin list --json"
+    $lines += "  $cli plugin marketplace list --json"
+    $lines += 'Only the verified WIQD-owned local marketplace with WIQD as its sole plugin can be migrated.'
+    $lines += 'Other plugins and marketplaces are preserved. Keep your local source files.'
+    $lines += 'Resolve the reported ownership or binding issue, then retry; use -SkipPlugin to install only the CLI.'
+    $lines -join "`n"
+}
+
+function Assert-WiqdPluginInventory {
+    param([object[]]$Inventory, [bool]$Internal, [string]$Cli)
+    foreach ($entry in $Inventory) {
+        if ($entry.state -eq 'conflict' -or (-not $Internal -and $entry.cli -eq $Cli -and $entry.targetError)) {
+            if ($entry.state -ne 'conflict') {
+                throw "Cannot install WIQD: $($entry.targetError)`nNo plugin changes were made.`n`nInspect the existing setup:`n  $($entry.cli) plugin marketplace list --json`n  $($entry.cli) plugin list --json`n`nTo install only the CLI, rerun with -SkipPlugin."
+            }
+            throw "Cannot replace the existing WIQD plugin setup in $($entry.cli).`nReason: $($entry.reason)`n$(Get-WiqdPluginRecovery $entry)"
+        }
+    }
+}
+
+function Invoke-WiqdPluginMutation {
+    param([string]$Cli, [string[]]$Arguments)
+    for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
+        $result = Invoke-WiqdPluginHost $Cli $Arguments
+        if ($result.ExitCode -eq 130 -or $result.ExitCode -eq 0 -or $result.StdErr -notmatch '(?i)EBUSY|EPERM|EACCES|being used by another process|resource busy|file.*locked') { break }
+        if ($attempt -lt 2) { Start-Sleep -Milliseconds (200 * [Math]::Pow(2, $attempt)) }
+    }
+    Assert-WiqdPluginHostSuccess $result
+}
+
+function Move-WiqdLegacyPlugin {
+    param($Current, [bool]$Internal)
+    $fresh = @(Get-WiqdPluginInventory)
+    $changed = "Plugin configuration changed during setup ($($Current.cli)).`nThis migration stopped before uninstalling the old local WIQD plugin.`nLet other plugin operations finish, then rerun this installer."
+    try { Assert-WiqdPluginInventory $fresh $Internal } catch { throw $changed }
+    $rechecked = @($fresh | Where-Object { $_.cli -eq $Current.cli })
+    if ($rechecked.Count -ne 1 -or $rechecked[0].state -ne 'local' -or (ConvertTo-Json -InputObject $rechecked[0] -Depth 20 -Compress) -cne (ConvertTo-Json -InputObject $Current -Depth 20 -Compress)) { throw $changed }
+    [Console]::Error.WriteLine("Migrating the old local WIQD plugin 'wiqd@wiqd' in $($Current.cli)...")
+    [Console]::Error.WriteLine("Uninstalling the old local plugin 'wiqd@wiqd'...")
+    Invoke-WiqdPluginMutation $Current.cli @('plugin', 'uninstall', 'wiqd@wiqd')
+    try {
+        $remaining = @(Get-WiqdNativePluginList $Current.cli)
+        $result = Invoke-WiqdPluginHost $Current.cli @('plugin', 'marketplace', 'list', '--json')
+        Assert-WiqdPluginHostSuccess $result $Current.cli
+        $sources = @(ConvertFrom-WiqdMarketplaceList $Current.cli $result.StdOut)
+    } catch {
+        if ($_.Exception.Data['ExitCode'] -eq 130) { throw }
+        throw "Migration of the old local WIQD plugin 'wiqd@wiqd' stopped in $($Current.cli).`nCurrent plugin state: unknown.`n$($_.Exception.Message)`nThe installer has not removed the old marketplace.`nCheck the current setup:`n  $($Current.cli) plugin list --json`n  $($Current.cli) plugin marketplace list --json`nResolve the reported error, then rerun this installer."
+    }
+    $owned = @($Current.marketplaces | Where-Object { $_.name -ceq 'wiqd' })
+    $consumers = @($remaining | Where-Object { $_.id -clike '*@wiqd' })
+    $retainedLivePlugin = $Current.cli -ceq 'copilot' -and $consumers.Count -eq 1 -and $consumers[0].id -ceq 'wiqd@wiqd' -and $consumers[0].localMarketplace -eq $true -and $consumers[0].enabled -eq $false
+    $reasons = @()
+    if ($consumers.Count -gt 0 -and -not $retainedLivePlugin) { $reasons += "Plugins still reference marketplace 'wiqd'." }
+    if ((ConvertTo-Json -InputObject $sources -Depth 20 -Compress) -cne (ConvertTo-Json -InputObject $Current.marketplaces -Depth 20 -Compress)) { $reasons += 'Marketplace registrations changed during setup.' }
+    if (-not (Test-WiqdOwnedPluginSource $owned[0].source)) { $reasons += 'The old local source can no longer be verified as WIQD-owned.' }
+    if ($reasons.Count) {
+        $targets = @($remaining | Where-Object { $_.id -ceq 'wiqd@wiqd' })
+        $state = if ($targets.Count -eq 0) { 'uninstalled' } elseif ($targets.Count -eq 1 -and $targets[0].enabled -eq $false) { 'disabled' } else { 'still installed' }
+        $currentState = [pscustomobject]@{ cli = $Current.cli; plugins = $remaining; marketplaces = $sources }
+        throw "Migration of the old local WIQD plugin 'wiqd@wiqd' stopped in $($Current.cli).`nCurrent plugin state: $state.`nReason: $($reasons -join ' ')`nThe installer has not removed the old marketplace.`n$(Get-WiqdPluginRecovery $currentState -AfterUninstall)"
+    }
+    [Console]::Error.WriteLine("Removing the old local marketplace 'wiqd' in $($Current.cli)...")
+    $result = Invoke-WiqdPluginHost $Current.cli @('plugin', 'marketplace', 'remove', 'wiqd')
+    Assert-WiqdPluginHostSuccess $result
+}
+
+function Invoke-WiqdPluginHelper {
+    param([string[]]$Arguments)
+    try {
+        if (-not $Arguments -or $Arguments.Count -eq 0) {
+            return [pscustomobject]@{ ExitCode = 2; Failed = $true; Combined = @('Expected install [--cli copilot|claude], check, or migrate.') }
+        }
+        $operation = $Arguments[0]
+        $cli = 'copilot'
+        if ($operation -notin @('install', 'check', 'migrate') -or ($Arguments.Count -ne 1 -and -not ($operation -eq 'install' -and $Arguments.Count -eq 3 -and $Arguments[1] -ceq '--cli' -and $Arguments[2] -cin @('copilot', 'claude')))) {
+            return [pscustomobject]@{ ExitCode = 2; Failed = $true; Combined = @('Expected install [--cli copilot|claude], check, or migrate.') }
+        }
+        if ($Arguments.Count -eq 3) { $cli = $Arguments[2] }
+        if ($operation -eq 'install') {
+            foreach ($probe in @(@('--version'), @('plugin', 'marketplace', '--help'))) {
+                $result = Invoke-WiqdPluginHost $cli $probe
+                Assert-WiqdPluginHostSuccess $result
+            }
+        }
+        $inventory = @(Get-WiqdPluginInventory)
+        $internal = $operation -ne 'install'
+        Assert-WiqdPluginInventory $inventory $internal $cli
+        $targets = @($inventory | Where-Object { $_.state -eq 'local' -and ($internal -or $_.cli -eq $cli) })
+        foreach ($current in $targets) {
+            $result = Invoke-WiqdPluginHost $current.cli @('plugin', 'marketplace', '--help')
+            Assert-WiqdPluginHostSuccess $result
+        }
+        if ($operation -ne 'check') {
+            foreach ($current in $targets) { Move-WiqdLegacyPlugin $current $internal }
+        }
+        if ($operation -eq 'install') {
+            $current = @($inventory | Where-Object { $_.cli -eq $cli }) | Select-Object -First 1
+            if (-not $current -or $current.state -ne 'selected') {
+                $result = Invoke-WiqdPluginHost $cli @('plugin', 'marketplace', 'add', 'microsoft/wiqd')
+                Assert-WiqdPluginHostSuccess $result
+            }
+            $verb = if ($current -and $current.state -eq 'selected' -and @($current.plugins | Where-Object { $_.id -ceq 'wiqd@wiqd' }).Count -gt 0) { 'update' } else { 'install' }
+            $progress = if ($verb -eq 'update') { 'Updating' } else { 'Installing' }
+            [Console]::Error.WriteLine("$progress WIQD from microsoft/wiqd in ${cli}...")
+            Invoke-WiqdPluginMutation $cli @('plugin', $verb, 'wiqd@wiqd')
+            return [pscustomobject]@{ ExitCode = 0; Failed = $false; Combined = @("WIQD plugin ready ($cli): wiqd@wiqd from microsoft/wiqd.") }
+        }
+        return [pscustomobject]@{ ExitCode = 0; Failed = $false; Combined = @(); Inventory = $inventory }
+    } catch {
+        $code = if ($_.Exception.Data['ExitCode'] -eq 130) { 130 } else { 1 }
+        return [pscustomobject]@{ ExitCode = $code; Failed = $true; Combined = @($_.Exception.Message) }
+    }
+}
+# native-plugin:end
+
 
 function Get-SafeRegistryLabel {
     param([string]$Registry)
@@ -893,120 +1248,38 @@ function Remove-WiqdPowerShellShim {
 # Quick Start helpers
 # ─────────────────────────────────────────────
 
-function Get-WiqdInstalledSkills {
-    # Reads installed skill names from the globally-installed wiqd package and
-    # its bundled extensions. Skills live in two places:
-    #   1. $npmRoot/@microsoft/wiqd/plugin/skills/         (core/bundled)
-    #   2. $npmRoot/@microsoft/wiqd/extensions/wiqd-ext-*/skills/  (extension-contributed)
-    # We deduplicate (bundle wins, matching MarketplaceStaging) and sort.
-    # We use `npm root -g` so the path works across Windows/macOS/Linux.
-    try {
-        if ($null -eq $script:NpmExe) {
-            return @()
-        }
-
-        $rootResult = Invoke-Native { & $script:NpmExe root -g --loglevel=error }
-        $npmRoot = if ($rootResult.StdOut.Count -gt 0) { $rootResult.StdOut[0].Trim() } else { '' }
-        if ([string]::IsNullOrWhiteSpace($npmRoot)) {
-            return @()
-        }
-
-        $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        $names = [System.Collections.Generic.List[string]]::new()
-
-        # 1. Bundle skills (wins on conflicts).
-        $bundleSkills = Join-Path $npmRoot "@microsoft" "wiqd" "plugin" "skills"
-        if (Test-Path $bundleSkills) {
-            Get-ChildItem -Path $bundleSkills -Directory -ErrorAction SilentlyContinue |
-                Where-Object { -not $_.Name.StartsWith('_') } |
-                ForEach-Object {
-                    if ($seen.Add($_.Name)) { [void]$names.Add($_.Name) }
-                }
-        }
-
-        # 2. Extension-contributed skills (alphabetic discovery order, first wins).
-        $extRoot = Join-Path $npmRoot "@microsoft" "wiqd" "extensions"
-        if (Test-Path $extRoot) {
-            Get-ChildItem -Path $extRoot -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -like 'wiqd-ext-*' } |
-                Sort-Object Name |
-                ForEach-Object {
-                    $extSkills = Join-Path $_.FullName "skills"
-                    if (Test-Path $extSkills) {
-                        Get-ChildItem -Path $extSkills -Directory -ErrorAction SilentlyContinue |
-                            Where-Object { -not $_.Name.StartsWith('_') } |
-                            ForEach-Object {
-                                if ($seen.Add($_.Name)) { [void]$names.Add($_.Name) }
-                            }
-                    }
-                }
-        }
-
-        return @($names | Sort-Object)
-    } catch {
-        return @()
-    }
-}
-
 function Write-WiqdQuickstart {
-    # Renders the closing Quick Start block. Kept compact and helper-driven
-    # to minimize merge conflicts with in-flight installer edits.
-    # Must mirror the bash installer's print_wiqd_quickstart output character-
-    # for-character (diff is shell-idiom only). Host-aware: the plugin is only
-    # composed for a plugin host that is present, so the guidance matches what
-    # the user can actually run — Copilot CLI commands when Copilot is on PATH,
-    # Claude Code guidance when only Claude is, and a manual-finish hint (not a
-    # host the user lacks) when neither is present.
-    $installedSkills = Get-WiqdInstalledSkills
     $copilotPresent = Test-CommandExists 'copilot'
     $claudePresent = Test-CommandExists 'claude'
+    $pluginReady = $script:PluginInstallSucceeded -and -not $script:PluginInstallFailed -and -not $script:PluginInstallCancelled -and -not $script:PluginInstallSkipped
     Write-Host " Quick Start:" -ForegroundColor Cyan
-    Write-Host "   wiqd agent create --name my-agent              Create a new agent" -ForegroundColor White
-    Write-Host "   wiqd agent validate                            Validate your agent" -ForegroundColor White
-    Write-Host "   wiqd agent provision --env local               Deploy locally" -ForegroundColor White
+    Write-Host "   wiqd plugin create --name my-plugin            Create a new plugin" -ForegroundColor White
+    Write-Host "   cd my-plugin                                  Enter the plugin project" -ForegroundColor White
+    Write-Host "   wiqd plugin validate                          Validate your plugin" -ForegroundColor White
+    Write-Host "   wiqd plugin provision --env local              Provision to your tenant (local env)" -ForegroundColor White
     Write-Host ""
-    if ($copilotPresent) {
-        Write-Host " Or with Copilot CLI (interactive mode):" -ForegroundColor Cyan
-        Write-Host "   copilot -i `"create a new declarative agent`"" -ForegroundColor White
-        Write-Host "   copilot -i `"validate my agent`"" -ForegroundColor White
-        Write-Host "   copilot -i `"deploy my agent locally`"" -ForegroundColor White
-        Write-Host ""
-    } elseif ($claudePresent) {
-        Write-Host " Or in Claude Code — the wiqd plugin's slash commands are available." -ForegroundColor Cyan
-        Write-Host ""
-    }
-    if ($copilotPresent -or $claudePresent) {
-        # Gate the skills list on the plugin step actually SUCCEEDING this run,
-        # never on host presence alone — Get-WiqdInstalledSkills reads the npm
-        # bundle on disk, which exists regardless of whether `wiqd component
-        # plugin install` ever ran or failed, so host-presence-only gating
-        # produced a phantom list. Require a CLEAN run (succeeded AND not
-        # failed): in a multi-host loop one host can succeed while another
-        # fails, and the bundle-derived list has no way to attribute skills to
-        # a specific host, so ANY attempted failure must suppress the blanket
-        # list rather than overstate success next to a partial-install banner.
-        if ($script:PluginInstallSucceeded -and -not $script:PluginInstallFailed -and -not $script:PluginInstallCancelled) {
-            Write-Host " Installed wiqd skills:" -ForegroundColor Cyan
-            if ($installedSkills.Count -gt 0) {
-                foreach ($name in $installedSkills) {
-                    Write-Host "   /$name" -ForegroundColor White
-                }
-            } else {
-                Write-Host "   (No installed skills detected — see https://aka.ms/wiqd/docs)" -ForegroundColor Gray
-            }
+    if ($pluginReady -and ($copilotPresent -or $claudePresent)) {
+        Write-Host " Start a new host session to use the WIQD plugin." -ForegroundColor Cyan
+        if ($copilotPresent) {
+            Write-Host " Or with Copilot CLI (interactive mode):" -ForegroundColor Cyan
+            Write-Host "   copilot -i `"create a new standalone plugin`"" -ForegroundColor White
+            Write-Host "   copilot -i `"validate my plugin`"" -ForegroundColor White
+            Write-Host "   copilot -i `"provision my plugin in the local environment`"" -ForegroundColor White
             Write-Host ""
-        } elseif (-not $script:PluginInstallSkipped -and -not $script:PluginInstallCancelled) {
-            Write-Host " wiqd skills are not installed for this host yet." -ForegroundColor Yellow
-            # Prefer a host we KNOW failed over the present-host fallback, so a
-            # mixed-host run (one succeeded, one failed) points the retry hint
-            # at the host that actually needs it instead of a working one.
-            $retryHost = if ($script:FailedPluginHosts.Count -gt 0) { $script:FailedPluginHosts[0] } elseif ($copilotPresent) { 'copilot' } else { 'claude' }
-            Write-Host "   Run 'wiqd component plugin install --cli $retryHost' to install them" -ForegroundColor White
+        } else {
+            Write-Host " Open Claude Code to use the WIQD plugin." -ForegroundColor Cyan
             Write-Host ""
         }
-    } else {
-        Write-Host " To use wiqd inside an agent, install Copilot CLI or Claude Code, then run:" -ForegroundColor Cyan
-        Write-Host "   wiqd component plugin install    (add --cli claude for Claude Code)" -ForegroundColor White
+    } elseif (-not $script:PluginInstallCancelled) {
+        if (-not $copilotPresent -and -not $claudePresent) {
+            Write-Host " First install Copilot CLI or Claude Code." -ForegroundColor Cyan
+        }
+        Write-Host " Manual plugin setup (choose the host needing setup):" -ForegroundColor Cyan
+        Write-Host " Resolve any reported errors or source conflicts first." -ForegroundColor Yellow
+        Write-Host "   copilot plugin marketplace add microsoft/wiqd" -ForegroundColor White
+        Write-Host "   copilot plugin install wiqd@wiqd" -ForegroundColor White
+        Write-Host "   claude plugin marketplace add microsoft/wiqd" -ForegroundColor White
+        Write-Host "   claude plugin install wiqd@wiqd" -ForegroundColor White
         Write-Host ""
     }
     Write-Host " Documentation:" -ForegroundColor Cyan
@@ -1015,6 +1288,30 @@ function Write-WiqdQuickstart {
 }
 
 
+
+function Save-WiqdInstallProvenance {
+    param([string]$HomeDirectory = $HOME)
+
+    $url = 'https://aka.ms/wiqd/install.ps1'
+    $arguments = @()
+    $temporaryPath = $null
+    try {
+        $directory = Join-Path $HomeDirectory '.wiqd'
+        [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+        $temporaryPath = Join-Path $directory ('.install-method.' + [guid]::NewGuid().ToString('N') + '.tmp')
+        $marker = @{ version = 1; method = 'bootstrap'; installer = @{ url = $url; args = $arguments } }
+        [System.IO.File]::WriteAllText($temporaryPath, ($marker | ConvertTo-Json -Depth 3), [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::Move($temporaryPath, (Join-Path $directory 'install-method.json'), $true)
+        return $true
+    } catch {
+        Write-Err "Could not save install provenance. Re-run your intended installer: $_"
+        return $false
+    } finally {
+        if ($temporaryPath -and [System.IO.File]::Exists($temporaryPath)) {
+            [System.IO.File]::Delete($temporaryPath)
+        }
+    }
+}
 
 # A real install is always EXECUTED (iex "& { $(irm …) }"), never dot-sourced —
 # only this repo's test harness dot-sources this file to import its functions.
@@ -1412,6 +1709,10 @@ if (-not (Show-DependencyStatus)) {
     return 1
 }
 
+if (-not (Save-WiqdInstallProvenance)) {
+    return 1
+}
+
 # Persist EULA acceptance now that the wiqd CLI is verified on PATH — BEFORE the
 # host-integration steps (VS Code, plugin) that themselves invoke EULA-gated
 # wiqd commands. The human already accepted at the installer's own interactive
@@ -1481,36 +1782,33 @@ if (-not $SkipPlugin) {
         # We NEVER install a plugin host. Installing a third-party agent CLI
         # (Copilot CLI / Claude Code) without consent is out of scope for the
         # wiqd install — the host is the plugin host, not a wiqd dependency.
-        # Detect which supported host(s) are already on PATH and
-        # compose the plugin only for those; `wiqd component plugin install --cli <host>`
-        # resolves the same binary, so a PATH hit here matches the command's own
-        # host check. If neither host is present, skip gracefully and
-        # non-fatally — the wiqd CLI install itself is already complete.
+        # Detect which supported host(s) are already on PATH. The shared
+        # The embedded installer helper inventories every
+        # host, proves and migrates WIQD's legacy local marketplace, rejects
+        # unsafe local state, and installs the selected remote profile.
+        # Keeping that logic in one handler gives PowerShell, Bash, and update
+        # identical safety checks. If neither host is present, skip gracefully.
         $pluginHosts = @()
         if (Test-CommandExists 'copilot') { $pluginHosts += 'copilot' }
         if (Test-CommandExists 'claude') { $pluginHosts += 'claude' }
 
         if ($pluginHosts.Count -eq 0) {
             Write-Info "No Copilot CLI or Claude Code detected — skipping plugin install."
-            Write-Hint "Install one, then run 'wiqd component plugin install' (add '--cli claude' for Claude Code)."
+            Write-Hint "Install one, then rerun this same WIQD installer."
         } else {
             foreach ($pluginHost in $pluginHosts) {
                 try {
-                    # Every `wiqd component plugin install` is a clean reinstall (it wipes the
-                    # target plugin dir before copying the bundle), so no --force is
-                    # needed to refresh an existing install. --force IS needed when an
-                    # install path activated additional extensions in this same run: a
-                    # plain compose treats an unchanged wiqd version as already up to
-                    # date and would leave the prior toggle's skill set deployed, so
-                    # --force forces the uninstall-then-reinstall that rebuilds the
-                    # plugin tree from the freshly-composed source.
-                    $pluginInstallArgs = @('component', 'plugin', 'install', '--cli', $pluginHost)
-                    if ($script:PluginForceRecompose) { $pluginInstallArgs += '--force' }
-                    $pluginOutput = & wiqd @pluginInstallArgs 2>&1
-                    $pluginExitCode = $LASTEXITCODE
+                    $pluginInstallArgs = @('install', '--cli', $pluginHost)
+                        $pluginResult = Invoke-WiqdPluginHelper -Arguments $pluginInstallArgs
+                    $pluginOutput = $pluginResult.Combined
+                    $pluginExitCode = $pluginResult.ExitCode
                     if ($pluginExitCode -eq 0) {
                         Write-Ok "wiqd plugin installed for $pluginHost"
                         $script:PluginInstallSucceeded = $true
+                        $pluginDetail = ($pluginOutput | Out-String).Trim()
+                        if ($pluginDetail) {
+                            [Console]::Error.WriteLine($pluginDetail)
+                        }
                     } elseif ($pluginExitCode -eq 130) {
                         Write-Warn "wiqd plugin install cancelled for $pluginHost (exit code 130)"
                         $pluginDetail = ($pluginOutput | Out-String).Trim()
@@ -1525,13 +1823,13 @@ if (-not $SkipPlugin) {
                         if ($pluginDetail) {
                             Write-Warn "  $pluginDetail"
                         }
-                        Write-Hint "Run 'wiqd component plugin install --cli $pluginHost' to retry"
+                        Write-Hint "Fix the reported cause, then rerun this same WIQD installer."
                         $script:PluginInstallFailed = $true
                         $script:FailedPluginHosts += $pluginHost
                     }
                 } catch {
                     Write-Warn "Could not install wiqd plugin for ${pluginHost}: $_"
-                    Write-Hint "Run 'wiqd component plugin install --cli $pluginHost' to retry"
+                    Write-Hint "Fix the reported cause, then rerun this same WIQD installer."
                     $script:PluginInstallFailed = $true
                     $script:FailedPluginHosts += $pluginHost
                 }
@@ -1539,7 +1837,7 @@ if (-not $SkipPlugin) {
         }
     } else {
         Write-Warn "Skipping plugin install — wiqd CLI not verified on PATH"
-        Write-Hint "Restart your terminal and run: wiqd component plugin install"
+        Write-Hint "Restart your terminal, then rerun this same WIQD installer."
     }
 }
 
@@ -1579,11 +1877,8 @@ if ($installSuccess -and -not $script:PluginInstallFailed -and -not $script:Plug
     Write-Host " ╚══════════════════════════════════════╝" -ForegroundColor Yellow
     Write-Host ""
 
-    Write-Host " ⚠  wiqd plugin install did not complete for:" -ForegroundColor Yellow
-    foreach ($failedHost in $script:FailedPluginHosts) {
-        Write-Host "   - $failedHost" -ForegroundColor White
-        Write-Host "     Run 'wiqd component plugin install --cli $failedHost' to retry" -ForegroundColor Gray
-    }
+    Write-Host " WIQD CLI installed; plugin setup incomplete for: $($script:FailedPluginHosts -join ', ')." -ForegroundColor Yellow
+    Write-Host " Follow the recovery steps above, then rerun this installer." -ForegroundColor Gray
     Write-Host ""
 
     Write-WiqdQuickstart
@@ -1611,13 +1906,9 @@ if ($script:PluginInstallCancelled) {
 # nothing here aborts the run early — the CLI install itself always completes
 # and the summary above already gave the user the full retry story.
 if ($script:PluginInstallFailed) {
-    # Under -PluginNonFatal (wiqd update), the CLI itself already updated
-    # successfully; a plugin refresh blocked by an in-use agent must not be
-    # reported as a failed update. Signal the distinct "CLI ok, plugin
-    # deferred" code so `wiqd update` can report success with a
-    # close-your-agents warning. Bootstrap/CI omit the flag and keep exit 1
-    # for partial-install detection.
-    if ($PluginNonFatal) { return 75 }
+    if ($PluginNonFatal -and $installSuccess) {
+        return 76
+    }
     return 1
 }
 

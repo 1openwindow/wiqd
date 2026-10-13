@@ -34,19 +34,13 @@ standard convention:
 See [Exit codes & output](/concepts/exit-codes-output/) for the full
 contract.
 
-## Plugin install prerequisites
+## Host plugin lifecycle
 
-`wiqd component plugin install` prepares the exact managed CLI generation for
-every active extension before it changes the persistent marketplace source or
-deploys the plugin. The deprecated `wiqd install plugin` and bare `wiqd install`
-aliases use the same lifecycle.
-
-Managed preparation may access the configured npm registry. If authentication,
-registry access, installation, or cancellation prevents preparation, the
-command returns the corresponding managed CLI error without changing the
-existing marketplace source or installed plugin. Retry after restoring package
-feed access; lazy first-use resolution remains available when install-time
-preparation was skipped.
+Copilot and Claude plugins are managed by their native marketplaces, independently
+of WIQD CLI installation and extension activation. See
+[marketplace installation](/getting-started/installation/#path-1-install-from-the-marketplace).
+WIQD does not compose, refresh, or remove a host plugin. Managed extension CLIs
+remain available through normal first-use resolution and `wiqd doctor`.
 
 <!-- BEGIN: command-reference -->
 
@@ -90,8 +84,8 @@ per-command tables below.
 | [`wiqd agent info`](#wiqd-agent-info) | wiqd Core | Show MOS3 launch / acquisition info for a deployed agent. Accepts --agent-id (e.g. P_xxx.declarativeAgent), --title-id, or --manifest-id; emits the raw launch-info JSON. Used by the DevUI portal. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
 | [`wiqd agent list`](#wiqd-agent-list) | Work IQ | List declarative agents deployed in the tenant. |
 | [`wiqd agent monitor`](#wiqd-agent-monitor) | Work IQ | Query the Insights Agent about a provisioned agent's performance and usage. |
-| [`wiqd agent package`](#wiqd-agent-package) | wiqd Core | Package the agent into a deployable .zip. |
-| [`wiqd agent provision`](#wiqd-agent-provision) | wiqd Core | Provision a declarative agent to an environment. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
+| [`wiqd agent package`](#wiqd-agent-package) | wiqd Core | Package the agent into a deployable .zip after validating bundled DA skill and Worker references. |
+| [`wiqd agent provision`](#wiqd-agent-provision) | wiqd Core | Provision a declarative agent after validating bundled DA skill and Worker references. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
 | [`wiqd agent publish`](#wiqd-agent-publish) | wiqd Core | Publish an agent to the org catalog. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
 | [`wiqd agent share`](#wiqd-agent-share) | wiqd Core | Share an agent with users or the entire tenant. Requires Microsoft 365 sign-in; use `wiqd auth login`. |
 | [`wiqd agent share collaborator`](#wiqd-agent-share-collaborator) | wiqd Core | collaborator |
@@ -106,7 +100,7 @@ per-command tables below.
 | Command | Extension | Description |
 | --- | --- | --- |
 | [`wiqd auth`](#wiqd-auth) | wiqd (core) | Manage authentication for wiqd and its extensions |
-| [`wiqd auth login`](#wiqd-auth-login) | wiqd (core) | Sign in to wiqd services |
+| [`wiqd auth login`](#wiqd-auth-login) | wiqd (core) | Sign in to all active auth providers (requires a terminal) |
 | [`wiqd auth logout`](#wiqd-auth-logout) | wiqd (core) | Sign out of wiqd services |
 | [`wiqd auth status`](#wiqd-auth-status) | wiqd (core) | Show authentication status |
 | [`wiqd auth token`](#wiqd-auth-token) | wiqd Core | token |
@@ -128,11 +122,7 @@ per-command tables below.
 
 | Command | Extension | Description |
 | --- | --- | --- |
-| [`wiqd component`](#wiqd-component) | wiqd (core) | Manage wiqd host integrations (Copilot/Claude plugin, VS Code extension) |
-| [`wiqd component plugin`](#wiqd-component-plugin) | wiqd (core) | Manage the wiqd plugin for Copilot CLI or Claude Code |
-| [`wiqd component plugin info`](#wiqd-component-plugin-info) | wiqd (core) | Report where the wiqd plugin is installed for the selected CLI |
-| [`wiqd component plugin install`](#wiqd-component-plugin-install) | wiqd (core) | Install the wiqd plugin into Copilot CLI or Claude Code |
-| [`wiqd component plugin uninstall`](#wiqd-component-plugin-uninstall) | wiqd (core) | Uninstall the wiqd plugin from Copilot CLI or Claude Code |
+| [`wiqd component`](#wiqd-component) | wiqd (core) | Manage the Work IQ VS Code extension |
 | [`wiqd component vscode`](#wiqd-component-vscode) | wiqd (core) | Manage the Work IQ VS Code extension |
 | [`wiqd component vscode info`](#wiqd-component-vscode-info) | wiqd (core) | Report the VS Code extension install location (stable + insiders) |
 | [`wiqd component vscode install`](#wiqd-component-vscode-install) | wiqd (core) | Install the VS Code extension |
@@ -213,8 +203,9 @@ per-command tables below.
 | [`wiqd plugin export`](#wiqd-plugin-export) | wiqd Core | Export a plugin project to Open Plugin (or Claude/Cursor) format. |
 | [`wiqd plugin import`](#wiqd-plugin-import) | wiqd Core | Import an Open Plugin (or Claude/Cursor plugin) as a new plugin project. |
 | [`wiqd plugin list`](#wiqd-plugin-list) | wiqd Core | List standalone plugin projects under a directory. |
-| [`wiqd plugin package`](#wiqd-plugin-package) | wiqd Core | Package the plugin into a deployable .zip. |
-| [`wiqd plugin provision`](#wiqd-plugin-provision) | wiqd Core | Provision a plugin to an environment. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
+| [`wiqd plugin package`](#wiqd-plugin-package) | wiqd Core | Package the plugin into a deployable .zip after validating bundled DA skill and Worker references. |
+| [`wiqd plugin provision`](#wiqd-plugin-provision) | wiqd Core | Provision a plugin to an environment after validating bundled DA skill and Worker references. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
+| [`wiqd plugin publish`](#wiqd-plugin-publish) | wiqd Core | Submit a provisioned plugin to the tenant organization app catalog for administrator approval. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
 | [`wiqd plugin share`](#wiqd-plugin-share) | wiqd Core | Share a plugin with users or the entire tenant. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`. |
 | [`wiqd plugin show`](#wiqd-plugin-show) | wiqd Core | Show a summary of a standalone plugin project. |
 | [`wiqd plugin validate`](#wiqd-plugin-validate) | Manifest Validation & LSP | Validate a standalone plugin project (static MVL; --mode deep validates the built package via fx-core). |
@@ -707,7 +698,7 @@ wiqd agent monitor --json
 
 ### wiqd agent package
 
-Package the agent into a deployable .zip.
+Package the agent into a deployable .zip after validating bundled DA skill and Worker references.
 
 **Extension:** wiqd Core
 
@@ -733,7 +724,7 @@ wiqd agent package --json
 
 ### wiqd agent provision
 
-Provision a declarative agent to an environment. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`.
+Provision a declarative agent after validating bundled DA skill and Worker references. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`.
 
 **Extension:** wiqd Core
 
@@ -986,7 +977,7 @@ wiqd auth --help
 
 ### wiqd auth login
 
-Sign in to wiqd services
+Sign in to all active auth providers (requires a terminal)
 
 **Extension:** wiqd (core)
 
@@ -998,7 +989,7 @@ wiqd auth login [options]
 
 | Option | Description |
 | --- | --- |
-| `--interactive` | Force interactive login |
+| `--interactive` | Allow provider interactive sign-in (may reuse cached sessions; requires a terminal) |
 
 **Examples**
 
@@ -1138,7 +1129,7 @@ wiqd completion <shell> --json
 
 ## wiqd component
 
-Manage wiqd host integrations (Copilot/Claude plugin, VS Code extension)
+Manage the Work IQ VS Code extension
 
 **Extension:** wiqd (core)
 
@@ -1150,102 +1141,8 @@ wiqd component <command>
 
 ```bash
 wiqd component
-wiqd component plugin
 wiqd component vscode
 wiqd component --help
-```
-
-### wiqd component plugin
-
-Manage the wiqd plugin for Copilot CLI or Claude Code
-
-**Extension:** wiqd (core)
-
-```bash
-wiqd component plugin <command>
-```
-
-**Examples**
-
-```bash
-wiqd component plugin
-wiqd component plugin info
-wiqd component plugin install
-wiqd component plugin uninstall
-wiqd component plugin --help
-```
-
-### wiqd component plugin info
-
-Report where the wiqd plugin is installed for the selected CLI
-
-**Extension:** wiqd (core)
-
-```bash
-wiqd component plugin info [options]
-```
-
-**Options**
-
-| Option | Description |
-| --- | --- |
-| `--cli <cli>` | Which CLI to target (choices: "copilot", "claude", default: "copilot") |
-
-**Examples**
-
-```bash
-wiqd component plugin info
-wiqd component plugin info --cli copilot
-wiqd component plugin info --json
-```
-
-### wiqd component plugin install
-
-Install the wiqd plugin into Copilot CLI or Claude Code
-
-**Extension:** wiqd (core)
-
-```bash
-wiqd component plugin install [options]
-```
-
-**Options**
-
-| Option | Description |
-| --- | --- |
-| `--cli <cli>` | Which CLI to target (choices: "copilot", "claude", default: "copilot") |
-| `--force` | Uninstall and re-install even if already present |
-
-**Examples**
-
-```bash
-wiqd component plugin install
-wiqd component plugin install --cli copilot --force
-wiqd component plugin install --json
-```
-
-### wiqd component plugin uninstall
-
-Uninstall the wiqd plugin from Copilot CLI or Claude Code
-
-**Extension:** wiqd (core)
-
-```bash
-wiqd component plugin uninstall [options]
-```
-
-**Options**
-
-| Option | Description |
-| --- | --- |
-| `--cli <cli>` | Which CLI to target (choices: "copilot", "claude", default: "copilot") |
-
-**Examples**
-
-```bash
-wiqd component plugin uninstall
-wiqd component plugin uninstall --cli copilot
-wiqd component plugin uninstall --json
 ```
 
 ### wiqd component vscode
@@ -2182,7 +2079,7 @@ wiqd plugin list --json
 
 ### wiqd plugin package
 
-Package the plugin into a deployable .zip.
+Package the plugin into a deployable .zip after validating bundled DA skill and Worker references.
 
 **Extension:** wiqd Core
 
@@ -2208,7 +2105,7 @@ wiqd plugin package --json
 
 ### wiqd plugin provision
 
-Provision a plugin to an environment. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`.
+Provision a plugin to an environment after validating bundled DA skill and Worker references. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`.
 
 **Extension:** wiqd Core
 
@@ -2229,6 +2126,38 @@ wiqd plugin provision [options]
 wiqd plugin provision
 wiqd plugin provision --env <value> --path <value>
 wiqd plugin provision --json
+```
+
+### wiqd plugin publish
+
+Submit a provisioned plugin to the tenant organization app catalog for administrator approval. Requires Microsoft 365 sign-in; use `wiqd auth login --interactive`.
+
+**Extension:** wiqd Core
+
+```bash
+wiqd plugin publish [options]
+```
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--env <value>` | Environment to publish (default: "local") |
+| `--path <value>` | Plugin project path (defaults to CWD) |
+| `--manifest <value>` | Contained app manifest file override |
+| `--dry-run` | Run the validation pipeline and report readiness without submitting (default: false) |
+| `--no-runtime` | Skip Phase 3 (agent response sampling) and Phase 4 (browser) in dry-run mode |
+| `--no-network` | Skip Phase 2 (URL reachability) in dry-run mode |
+| `--browser` | Opt in to Phase 4 headless-browser checks (requires Playwright; bundled tabs only) (default: false) |
+| `--prompts <value>` | Path to a YAML file overriding the 5 canonical Phase 3 prompts |
+| `--artifacts <value>` | Restrict report artifacts (choices: "md", "html", "json", "all", default: "all") |
+
+**Examples**
+
+```bash
+wiqd plugin publish
+wiqd plugin publish --env <value> --path <value>
+wiqd plugin publish --json
 ```
 
 ### wiqd plugin share
@@ -2330,7 +2259,7 @@ wiqd update [options]
 | `--force` | Deprecated: update always reinstalls; kept for compatibility |
 | `--dry-run` | Show what would be done without doing it |
 | `--skip-extension` | Skip VS Code extension update |
-| `--skip-plugin` | Skip Copilot CLI plugin refresh |
+| `--skip-plugin` | Skip installer-owned plugin updates |
 
 **Examples**
 
@@ -2362,7 +2291,7 @@ Flag changes do not trigger a plugin reinstall.
 | Flag | Type | Default | Stage | Owner | Since | Description |
 |---|---|---|---|---|---|---|
 | `frontier` | `boolean` | `false` | `alpha` | wiqd-core | 0.14.0 | Enables preview capabilities across wiqd and participating extensions. |
-| `agent-skills` | `boolean` | `false` | `beta` | microsoft.wiqd.core | 0.12.2 | Enables `wiqd agent add skill` (the declarative-agent skills capability). The DA manifest schema for skills is not yet worldwide (WW); off by default until the schema is generally available. |
+| `agent-skills` | `boolean` | `false` | `beta` | microsoft.wiqd.core | 0.12.2 | Enables `wiqd agent add skill` and fx-core inclusion of DA-only `agent_skills` folders during agent/plugin package, provision, and publish. The DA manifest schema for skills is not yet worldwide (WW); off by default until the schema is generally available. |
 | `devui` | `boolean` | `false` | `beta` | microsoft.devui | 0.5.0 | Enables the `wiqd devui` commands (the local Work IQ DevUI web experience). Opt-in while the experience is in preview. |
 | `workiq-monitor` | `boolean` | `true` | `beta` | microsoft.workiq | 0.2.2 | Enables the `wiqd agent monitor` command (Insights Agent query) inside the Work IQ extension. On by default; can be set to false to hide the command. `agent ask` and `agent list` are always available. |
 <!-- END: generated-flag-table -->
