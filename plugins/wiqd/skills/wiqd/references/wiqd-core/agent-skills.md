@@ -4,20 +4,16 @@ Agent Skills package a reusable playbook — instructions, and optionally compan
 reference files — into a `SKILL.md` folder that Copilot loads on demand, instead of keeping it
 permanently resident in the agent's `instructions` text. This guide covers when to use a skill,
 the authoring flow through `wiqd agent add skill`, the manifest shape, the platform's validation
-codes, and — most importantly — the environment-variable gate that decides whether skill
-generation even works on your machine.
+codes, and — most importantly — the WIQD feature flag that decides whether skill generation and
+packaging are enabled.
 
-> **⛔ ONE SKILL FOLDER, TWO REGISTRATIONS — DON'T MIX UP THE SYNTAX.** A single skill folder —
-> `appPackage/skills/<slug>/SKILL.md` — is the one underlying artifact. `agentSkills[]` (Teams app
-> manifest, camelCase) and `agent_skills[]` (declarative-agent manifest, snake_case) are two
-> registrations that both use the same `folder` property to point at that same folder —
-> `wiqd agent add skill` already writes both of them for you today. The second one is what exposes
-> the skill to Copilot, via its `expose_skill_to_copilot` boolean; that property isn't set
-> automatically, so add it yourself in the entry already on disk when you want the exposure. Read
-> [The Two Surfaces](#the-two-surfaces) before touching either one — the two registrations differ
-> only in array key casing (camelCase `agentSkills` vs. snake_case `agent_skills`) and which
-> manifest they live in, and an `agentSkills[]` entry missing its required `folder` property fires
-> `ASKILL-M001`.
+> **⛔ TWO HOST-SPECIFIC SKILL SETS — DO NOT REQUIRE DUAL REGISTRATION.**
+> `agentSkills[]` (Teams app manifest, camelCase) registers app-level Cowork skills, while
+> `agent_skills[]` (declarative-agent manifest, snake_case) registers DA Chat skills. Both use a
+> `folder` property and they may deliberately point at the same folder, but they may also name
+> different folders. `wiqd agent add skill` currently writes both registrations for its generated
+> flow; that convenience is not a platform requirement for a hand-authored DA-only skill. Read
+> [The Two Surfaces](#the-two-surfaces) before editing either one.
 
 ## Overview
 
@@ -39,25 +35,25 @@ permanently occupying the agent's instruction budget.
 
 ## The Two Surfaces
 
-A skill folder — `appPackage/skills/<slug>/SKILL.md` — can be registered on two different
-surfaces. Both registrations point at the exact same folder, through the exact same `folder`
-property: they are two registrations of one artifact, not two independent experiences that each
-need their own files.
+A skill folder can be registered on either of two host-specific surfaces. Both arrays use a
+`folder` property resolved from the app package, but the registrations are independent: a project
+may use Cowork-only skills, DA Chat-only skills, or intentionally point both surfaces at the same
+bytes.
 
 |                  | **Teams app manifest**                                                | **Declarative-agent manifest**                                                                    |
 | ---------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Array             | `agentSkills[]` (camelCase)                                             | `agent_skills[]` (snake_case)                                                                          |
-| Points at         | the skill's folder, via a `folder` property                            | the same skill's folder, via the same `folder` property                                              |
+| Points at         | a Cowork skill folder, via a `folder` property                          | a DA Chat skill folder, via a `folder` property                                                       |
 | Written to        | `appPackage/manifest.json`                                              | the declarative-agent manifest                                                                         |
 | Copilot exposure  | implied by the entry's presence in the array                           | explicit, via the `expose_skill_to_copilot` boolean — not set automatically (see below)               |
 | Validation        | `ASKILL-*` codes (e.g. `ASKILL-P002` if the folder has no `SKILL.md`)   | not yet covered by any `ASKILL-*` code — see below                                                     |
 | Produced by       | `wiqd agent add skill`, automatically                                   | also `wiqd agent add skill`, automatically — `folder` only; add `expose_skill_to_copilot` yourself     |
 
-Use `agent_skills[]` **in addition to** `agentSkills[]`, not instead of it — `wiqd agent add skill`
-already writes both entries for you, pointing at the identical folder through the identical
-`folder` property. The Teams app manifest registration is what makes the folder a skill at all;
-the declarative-agent registration is what exposes it to Copilot directly, once you set its
-`expose_skill_to_copilot` boolean to `true` yourself — that part isn't automatic.
+Do not add a second registration merely to satisfy WIQD packaging. `wiqd agent add skill` writes
+both entries today and points them at one folder, but hand-authored projects may keep the Cowork and
+DA Chat skill sets separate. A DA-only folder is included by fx-core only when the `agent-skills`
+packaging capability is active; WIQD now refuses package/provision while that capability is off
+instead of producing a known-incomplete archive.
 
 **Current tooling status:** wiqd's static validator (MVL) does not yet recognize `agent_skills` as
 a known member of the declarative-agent manifest — adding the key today is flagged as an
@@ -69,72 +65,26 @@ packages it behind a feature flag (see below); it just isn't in the published sc
 full picture, including why the published schema agrees with MVL's rejection today. Everything
 below this point up to that section describes the `agentSkills[]` surface specifically.
 
-## Check the `TEAMSFX_AGENT_SKILLS` Flag First
+## Enable the `agent-skills` Feature Flag First
 
-Enable WIQD's `agent-skills` flag before adding a DA skill. With the in-process FxCore
-backend, that evaluated flag also enables `ATK_FRONTIER` during SDK operations, including
-packaging, provisioning, and publishing; wiqd restores the previous value afterward.
-No separate SDK environment setting is needed for this backend.
-
-The `TEAMSFX_AGENT_SKILLS` checks and shell instructions below apply only to the legacy
-`microsoft.atk` backend, whose environment handling is unchanged:
-
-| Backend                                              | What happens to the flag                                                                                                                                     | What you must do                                                                    |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `microsoft.wiqd.core` (in-process fx-core)            | wiqd temporarily sets `ATK_FRONTIER=true` during SDK operations when the evaluated `agent-skills` flag is enabled, then restores the previous value          | Enable WIQD's `agent-skills` flag for generation and packaging                   |
-| `microsoft.atk` (shells out to ATK via `ManifestExecutor`) | wiqd never sets this variable — it appears in zero extension manifests. The spawned ATK subprocess inherits the parent process's entire environment, so whatever is (or isn't) set on the machine is exactly what ATK sees | **You must confirm the variable is already set on the machine — this is the load-bearing case** |
-
-A machine-level value set once genuinely enables skill generation on the ATK path today, because
-subprocess environments are inherited wholesale, not curated. Check it directly before proceeding:
-
-- Windows PowerShell: `$env:TEAMSFX_AGENT_SKILLS`
-- macOS/Linux: `echo $TEAMSFX_AGENT_SKILLS`
-
-**If it is unset (or not `true`) and the active backend is `microsoft.atk`:** do not run
-`wiqd agent add skill` expecting it to work — tell the user directly instead of letting the
-command fail opaquely:
-
-> "Agent Skills needs the `TEAMSFX_AGENT_SKILLS` environment variable set on this machine before I
-> can generate one. I'll show you how to set it, then we can try again."
-
-Then give the exact command for their shell:
-
-**Windows PowerShell — current session only:**
-
-```powershell
-$env:TEAMSFX_AGENT_SKILLS = 'true'
-```
-
-**Windows PowerShell — persists across sessions:**
-
-```powershell
-[Environment]::SetEnvironmentVariable('TEAMSFX_AGENT_SKILLS', 'true', 'User')
-```
-
-**macOS/Linux — current shell only:**
+Enable WIQD's `agent-skills` flag before adding, packaging, provisioning, or publishing a
+declarative-agent skill. The
+`microsoft.wiqd.core` backend is the only lifecycle backend; when the evaluated WIQD flag is on,
+core temporarily sets the SDK environment required for skill generation and packaging during the
+fx-core operation, then restores the previous environment afterward. Do not set
+SDK-specific environment variables yourself for WIQD flows.
 
 ```bash
-export TEAMSFX_AGENT_SKILLS=true
+wiqd config flags set agent-skills true
 ```
 
-**macOS/Linux — persists across sessions:**
-
-```bash
-echo 'export TEAMSFX_AGENT_SKILLS=true' >> ~/.zshrc   # or ~/.bashrc, depending on the user's shell
-```
-
-A "current session only" `export`/`$env:` set is not visible to a process that was already
-running when it was set — after setting it, re-run `wiqd agent add skill` in the same shell, not
-in a separate one.
-
-**On the legacy ATK backend, the flag also gates packaging, not just generation.** `wiqd agent package` copies each
-`agent_skills[]`-referenced skill folder into the built `.zip` only when `TEAMSFX_AGENT_SKILLS` is
-set at package time — if it's unset, that packaging step silently skips those directories
-entirely, with no warning. This means the flag must be set for **both** commands, not just
-`add skill`: generating a skill with the flag on, then running `wiqd agent package` in a later
-shell or CI job where the flag isn't set, produces a package that's silently missing its skill
-directories. Check the flag before `wiqd agent package` too, exactly as you would before
-`wiqd agent add skill`.
+The flag matters for `wiqd agent add skill` and for every fx-core path that builds an app package:
+`wiqd agent package`, `wiqd agent provision`, `wiqd plugin package`, and
+`wiqd plugin provision`, plus normal `wiqd agent publish` and `wiqd plugin publish`. If a
+hand-edited DA manifest contains `agent_skills[].folder` and that
+folder is not already registered as a top-level `agentSkills[]` Cowork skill, enable the flag
+before package, provision, or publish. WIQD fails before fx-core with the command above when the
+folder would otherwise be omitted; it does not add a second registration or rewrite the project.
 
 ## When to Use Agent Skills
 
@@ -167,17 +117,15 @@ right one depends on what you already have:
 | Question                                                                                   | Command                                                                 | What it does                                                                                                                                                         |
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Composing a **new, independent** skill (or a skill-only package), with no existing agent? | `wiqd plugin add skill`                                                 | Composes a capability into a **standalone plugin project** (`wiqd.plugin.json`) from scratch. A plugin can be skill-only — it doesn't require a declarative agent.       |
-| Extending an agent project you **already have**?                                          | `wiqd agent add skill`                                                  | Adds the skill directly into that **existing agent project**, in place, via ATK. Also supports `--from` to import an existing skill directory or `.zip`.                |
+| Extending an agent project you **already have**?                                          | `wiqd agent add skill`                                                  | Adds the skill directly into that **existing agent project**, in place, through the in-process wiqd core lifecycle backend. Also supports `--from` to import an existing skill directory or `.zip`.                |
 | Want the skill **exposed to Copilot directly**, on top of however it got there?           | Add `expose_skill_to_copilot: true` to the matching `agent_skills[]` entry | The entry itself is already written for you by `wiqd agent add skill` — it just doesn't set this property. See [The Declarative-Agent Registration](#the-declarative-agent-registration-agent_skills). |
 
 In short: `wiqd agent add skill` extends a project you're already building; `wiqd plugin add skill`
-starts a new one and doesn't require an agent to exist first. Either path produces the same
-`agentSkills[]` registration. Only `wiqd agent add skill` also writes the `agent_skills[]`
-registration automatically, since it operates on a project that already has a declarative-agent
-manifest — add `expose_skill_to_copilot: true` to that entry when you want the skill exposed to
-Copilot directly. A skill-only plugin from `wiqd plugin add skill` has no declarative-agent
-manifest yet, so add a declarative agent (`wiqd plugin add agent`) before that registration can
-apply.
+starts a new one and doesn't require an agent to exist first. Both author a top-level
+`agentSkills[]` Cowork registration. `wiqd agent add skill` additionally writes an
+`agent_skills[]` DA Chat registration because it operates on a project that already has a
+declarative-agent manifest. A skill-only plugin from `wiqd plugin add skill` has no DA manifest,
+and it does not need one unless the author separately adds a declarative agent and DA Chat skills.
 
 ## Authoring Flow
 
@@ -333,13 +281,11 @@ one field:
 
 ## The Declarative-Agent Registration: `agent_skills[]`
 
-`agent_skills[]` (snake_case) is the declarative-agent manifest's own registration for a skill —
-a second, opt-in registration of the same skill an `agentSkills[]` entry already registers, not a
-competing array. It uses the exact same `folder` property as `agentSkills[]`, resolved relative to
-the declarative-agent manifest's own directory — the same `appPackage/` directory `manifest.json`
-resolves `folder` against — so an identical `folder` value in both registrations points at the
-identical skill folder, containing the identical uppercase `SKILL.md`. There is no lowercase
-`skill.md` variant on this surface, or any other:
+`agent_skills[]` (snake_case) is the declarative-agent manifest's DA Chat registration. It is
+independent from the app manifest's `agentSkills[]` Cowork registration and uses the same
+package-root-relative `folder` property shape. Identical folder values deliberately share bytes;
+different values preserve separate host-specific skill sets. Every referenced folder contains an
+uppercase `SKILL.md`; there is no lowercase `skill.md` variant:
 
 ```json
 {
@@ -352,12 +298,10 @@ identical skill folder, containing the identical uppercase `SKILL.md`. There is 
 }
 ```
 
-`wiqd agent add skill` already writes this entry for you today, on both backends (the
-`microsoft.atk` shell-out and the in-process `microsoft.wiqd.core` engine): the underlying
-`atk add skill` / fx-core `addSkill` call initializes `agent_skills[]` if it's missing and pushes
-`{ folder }` — **`folder` only**. It does not set `expose_skill_to_copilot`; add that property
-yourself, to the entry `wiqd agent add skill` already wrote, when you want the skill exposed to
-Copilot directly.
+`wiqd agent add skill` already writes this entry for you today: the underlying fx-core
+`addSkill` call initializes `agent_skills[]` if it's missing and pushes `{ folder }` —
+**`folder` only**. It does not set `expose_skill_to_copilot`; add that property yourself, to the
+entry `wiqd agent add skill` already wrote, when you want the skill exposed to Copilot directly.
 
 **Required manifest version:** an agent that uses `agent_skills[]` must set the declarative-agent
 manifest's `version` field to the exact value `"v1.9"`:
@@ -381,9 +325,9 @@ Grounded facts about this registration:
   declarative-agent manifest rather than `appPackage/manifest.json`. The underlying toolchain also
   accepts an `x-agent_skills` (extension-prefixed) form as a packaging-time fallback, but
   `wiqd agent add skill` always writes to `agent_skills`, never the `x-` form.
-- The entry's only confirmed property is `folder` — the same name, same meaning, and same
-  resolution base as `agentSkills[]`'s `folder`. Do not invent any property beyond `folder` and
-  `expose_skill_to_copilot`.
+- The entry's only confirmed path property is `folder` — the same package-root-relative shape as
+  `agentSkills[]`'s `folder`, without requiring the same value or a matching top-level entry. Do
+  not invent IDs or capability gates.
 - Exposure is the explicit `expose_skill_to_copilot` boolean. It is not written automatically by
   `wiqd agent add skill` — set it yourself in the entry already on disk.
 - `agent_skills` is not present in the published declarative-agent manifest schema: the v1.8
@@ -392,8 +336,8 @@ Grounded facts about this registration:
   published yet — so wiqd's static validator (MVL) currently rejects an `agent_skills` key as an
   unrecognized member, matching the published schema. That is a **schema-publication gap, not a
   toolchain gap**: the underlying toolchain fully implements `agent_skills[]`, including packaging
-  the referenced skill folders into the built `.zip` (gated behind the same `TEAMSFX_AGENT_SKILLS`
-  flag covered above) — it just isn't in the published schema yet. Treat deep validation and the
+  the referenced skill folders into the built `.zip` when WIQD's `agent-skills` flag is enabled —
+  it just isn't in the published schema yet. Treat deep validation and the
   platform itself as the authority on whether an entry is accepted, and re-check this reference
   once a schema that includes `agent_skills` is published.
 
@@ -452,19 +396,19 @@ Loading is progressive, not all-or-nothing:
 3. `references/` files load on demand, only when the active skill's own instructions point at one.
 4. `scripts/` files are executed, not loaded — only their output joins the conversation.
 
-**The `TEAMSFX_AGENT_SKILLS` flag has no runtime effect on a shipped, validated agent.** It only
-gates whether the authoring toolchain can generate skill artifacts and whether `wiqd agent package`
-includes their skill folders in the built `.zip` — see
-[Check the Flag First](#check-the-teamsfx_agent_skills-flag-first). Once a skill is packaged and
-validated, Copilot's runtime behavior toward it is identical regardless of which backend or flag
-state originally produced it.
+**The WIQD `agent-skills` flag has no runtime effect on a shipped, validated agent.** It only
+gates whether the authoring toolchain can generate skill artifacts and whether fx-core package
+generation during agent/plugin package, provision, or publish includes DA-only skill folders — see
+[Enable the `agent-skills` Feature Flag First](#enable-the-agent-skills-feature-flag-first). Once
+a skill is packaged and validated, Copilot's runtime behavior toward it is identical regardless of
+which flag state originally produced it.
 
 ## Common Issues
 
 | Issue                                                              | Cause                                                                    | Solution                                                                                          |
 | --------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Package is missing its skill directories after `wiqd agent package` | `TEAMSFX_AGENT_SKILLS` wasn't set when packaging ran, even though it was set when the skill was added | Set the flag before packaging too, not just before `add skill` — see [Check the Flag First](#check-the-teamsfx_agent_skills-flag-first) |
-| `wiqd agent add skill` fails or produces an incomplete manifest    | `TEAMSFX_AGENT_SKILLS` isn't set on the machine, and the active backend is `microsoft.atk` | Set the flag — see [Check the Flag First](#check-the-teamsfx_agent_skills-flag-first) — and re-run in the same shell |
+| Package/provision/publish refuses a DA-only skill folder | WIQD's `agent-skills` flag is disabled and no top-level `agentSkills[]` Cowork registration would include that exact archive path | Run `wiqd config flags set agent-skills true`, then retry. Do not add an unrelated top-level registration just to bypass the check. |
+| `wiqd agent add skill` fails or produces an incomplete manifest    | WIQD's `agent-skills` flag is disabled | Enable the flag — see [Enable the `agent-skills` Feature Flag First](#enable-the-agent-skills-feature-flag-first) — and re-run the command |
 | Skill never triggers in conversation                               | `description` is too generic, or doesn't contain the phrases users actually say | Rewrite `description` around real trigger phrases, not a summary of the skill's purpose             |
 | Static `wiqd agent validate` passes but the upload still fails     | Static mode (MVL) doesn't check `agentSkills[]` or `SKILL.md` content at all | Run `wiqd agent package` then `wiqd agent validate --mode deep` before publishing                    |
 | Manifest edit didn't produce a working skill                       | `agentSkills[]` was hand-edited without also creating a matching `SKILL.md` folder | Prefer `wiqd agent add skill`; if you must hand-edit, create the folder and the manifest entry together |
@@ -472,20 +416,19 @@ state originally produced it.
 
 ## Best Practices
 
-1. **Check the flag before add AND before package.** Confirm `TEAMSFX_AGENT_SKILLS` is set before
-   attempting the skills path on the `microsoft.atk` backend, and again before
-   `wiqd agent package` — the flag gates packaging too, so a package built without it is silently
-   missing its skill directories.
+1. **Enable the flag before add, package, provision, or publish.** Confirm WIQD's `agent-skills` flag is
+   enabled before attempting the DA skills path and before `wiqd agent package`,
+   `wiqd agent provision`, `wiqd agent publish`, `wiqd plugin package`,
+   `wiqd plugin provision`, or `wiqd plugin publish` when a DA-only folder is present.
 2. **Keep `name` and folder in lockstep.** Treat the frontmatter `name` and the containing folder
    name as a single value — rename both together, always.
 3. **Write `description` for triggering, not for summarizing.** Pack in the actual phrases a user
    would say; a technically-accurate but generic description means the skill may never activate.
-4. **Add `expose_skill_to_copilot`, don't hand-author `agent_skills[]`.**
-   `wiqd agent add skill` already writes both the `agentSkills[]` (Teams app manifest) entry and
-   the `agent_skills[]` (declarative-agent manifest) entry — the latter with `folder` only. Add
-   `expose_skill_to_copilot: true` to that entry in `appPackage/declarativeAgent.json` when you
-   want the skill exposed to Copilot directly; wiqd's static validator currently flags the
-   `agent_skills` key as unrecognized regardless.
+4. **Preserve the intended host scope.** Use `agentSkills[]` for Cowork, `agent_skills[]` for DA
+   Chat, or both when both hosts should load the same folder. `wiqd agent add skill` writes both
+   for its generated flow. For a hand-authored DA-only entry, keep the flag enabled before
+   package/provision rather than adding an unrelated top-level registration. Add
+   `expose_skill_to_copilot: true` only when that DA behavior is intended.
 5. **Run deep validation before publishing.** Static `wiqd agent validate` cannot see
    `agentSkills[]` or `SKILL.md` content — always follow `wiqd agent package` with
    `wiqd agent validate --mode deep` before a submission. (`wiqd plugin validate --mode deep`

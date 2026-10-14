@@ -34,10 +34,33 @@ wiqd agent package --json --skill wiqd --env <environment> [--output <path>] [--
 3. Report the output path of the generated .zip file
 4. Suggest next steps: publish, sideload, or submit for certification
 
+## Bundled Reference Preflight
+
+Before fx-core runs, WIQD follows every
+`appPackage/manifest.json#copilotAgents.declarativeAgents[].file` entry. It does not assume the
+agent is named `appPackage/declarativeAgent.json`.
+
+- DA-only `agent_skills[].folder` content requires the evaluated `agent-skills` flag unless a
+  top-level `agentSkills[].folder` registration already packages the same folder. Cowork and DA
+  Chat skill sets may be deliberately different; do not add a second registration just to satisfy
+  packaging.
+- For a hand-edited DA-only skill, run
+  `wiqd config flags set agent-skills true` before package or provision.
+- Local `worker_agents[].file` references are unsupported by this bundled lifecycle. Use the
+  canonical published `worker_agents[].id`.
+- Missing, malformed, absolute, traversing, or symlink-escaping declared paths fail before the SDK
+  call. WIQD reads only declared references and does not rewrite the project.
+- WIQD currently fails closed when `appPackage/.generated/manifest.json` exists or the active
+  lifecycle file contains `typeSpec/compile`. The pinned SDK can generate or prefer that manifest
+  after preflight, so WIQD cannot yet guarantee that the validated manifest is the packaged one.
+  Remove stale generated output and use a non-TypeSpec lifecycle before retrying.
+
 ## Output
 
-The command produces a `.zip` file containing `manifest.json` (with resolved env vars), `declarativeAgent.json`, plugin files, icons, and other assets.
+The command produces a `.zip` file containing `manifest.json` (with resolved env vars), its
+referenced declarative-agent manifest files, plugin files, icons, and other assets.
 
-**Preflight:** Requires `appPackage/declarativeAgent.json`. Not an agent project if missing.
+**Preflight:** Requires `appPackage/manifest.json`; declarative-agent files are discovered through
+its `copilotAgents.declarativeAgents[].file` references.
 
 **Exit codes:** 0 = success, 1 = command error, 2 = infra error, 130 = cancelled.
