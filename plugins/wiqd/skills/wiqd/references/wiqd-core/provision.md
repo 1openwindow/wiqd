@@ -34,6 +34,23 @@ wiqd agent provision --json --skill wiqd --env <environment> [--path <path>]
 3. Read `M365_TITLE_ID` from `<path>/env/.env.<env>` (or `env/.env.<env>` when `--path` is omitted)
 4. Present the test link: `https://m365.cloud.microsoft/chat?titleId={M365_TITLE_ID}`
 
+## Bundled Reference Preflight
+
+Provision builds the app package that it uploads, so it applies the same extension-owned reference
+check as `wiqd agent package` before the fx-core provision method starts:
+
+- declarative-agent manifests come from
+  `appPackage/manifest.json#copilotAgents.declarativeAgents[].file`, not a fixed filename;
+- a hand-edited DA-only `agent_skills[].folder` requires
+  `wiqd config flags set agent-skills true` unless the same folder is already included by a
+  top-level Cowork `agentSkills[]` registration;
+- local `worker_agents[].file` is rejected; use a canonical published `worker_agents[].id`;
+- missing, malformed, absolute, traversing, and symlink-escaping references fail without mutating
+  the project or invoking the lifecycle SDK.
+
+DA Chat and top-level Cowork skill sets remain independent. Never add an unrelated duplicate
+registration merely to bypass the flag check.
+
 ## Shared Agent Version Bump
 
 When provisioning a **shared** agent (`AGENT_SCOPE=shared`), bump the manifest version:
@@ -65,6 +82,7 @@ When provisioning a **shared** agent (`AGENT_SCOPE=shared`), bump the manifest v
 - **ALWAYS** run shared agent version bump when `AGENT_SCOPE=shared`
 - **NEVER** set placeholder values for environment variables — leave empty, provisioning fills them
 
-**Preflight:** Requires `appPackage/declarativeAgent.json` and `m365agents.yml` or `teamsApp.yml`.
+**Preflight:** Requires `appPackage/manifest.json` and `m365agents.yml` or `teamsApp.yml`;
+declarative-agent files are discovered through the app manifest.
 
 **Exit codes:** 0 = success, 1 = command error, 2 = infra error, 130 = cancelled.

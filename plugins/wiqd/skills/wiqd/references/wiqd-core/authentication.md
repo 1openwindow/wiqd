@@ -12,6 +12,11 @@ This guide explains how to configure OAuth authentication for MCP server plugins
 >
 > - The MCP server or API is unauthenticated → use `"auth": {"type": "None"}` directly
 > - You're using API key authentication → handle via environment variables in the OpenAPI spec
+> - You are referencing an **existing OpenAPI custom connector** through
+>   `toolSource.openApiConnector` → do not create an Entra app or `oauth/register` block for this
+>   guide. Use `wiqd plugin add connector --kind openapi --name "<name>" --description "<description>" --auth-reference-id <logical-name> --dev-preview`;
+>   the reference is the connector's logical name (for example `shared_kusto`), not a
+>   secret, connection instance, or OAuth registration id.
 
 ---
 
@@ -28,7 +33,7 @@ The result is a `<PREFIX>_MCP_AUTH_ID` environment variable that the plugin mani
 > **⛔ Read this first if the server is Microsoft-hosted / Entra-protected** (`*.azure.com`, `*.microsoft.com`, anything whose authority is `login.microsoftonline.com`). Two things in this guide do **not** apply, and discovering that the hard way costs hours:
 >
 > - **Dynamic Client Registration cannot work.** Entra implements no RFC 7591 `registration_endpoint`. Skip Step 2's DCR path entirely — see [Entra does not support DCR](#entra-does-not-support-dcr).
-> - **You will have to register an Entra application by hand.** `agentConnectors` has no `microsoftEntra` auth type, so the only OAuth-capable connector type is `OAuthPluginVault`, which needs a `clientId` you own — even when the resource is a first-party Microsoft API. See [Platform constraints](#platform-constraints-read-before-estimating).
+> - **An Entra-protected remote MCP server needs a client application you own.** `agentConnectors[].toolSource.remoteMcpServer` has no `microsoftEntra` auth type, so this OAuth path uses `OAuthPluginVault` with your `clientId`, even for a first-party Microsoft API. This requirement does not apply when referencing an existing `openApiConnector` through `ConnectionVault`. See [Platform constraints](#platform-constraints-read-before-estimating).
 
 
 ---
@@ -307,9 +312,9 @@ So if a registration was created with the wrong values — the `applicableToApps
 
 ## Platform constraints (read before estimating)
 
-Two limits are **not** wiqd bugs and cannot be worked around in the manifest. Surface them to the user early — both are commonly discovered only after significant work.
+The following limits concern OAuth for `remoteMcpServer` connectors, not existing `openApiConnector` references. Surface them to remote-MCP authors early; they cannot be worked around by changing manifest fields.
 
-### `agentConnectors` has no `microsoftEntra` auth type
+### Remote MCP connectors have no `microsoftEntra` auth type
 
 The two extensibility surfaces expose different auth vocabularies:
 
@@ -317,20 +322,27 @@ The two extensibility surfaces expose different auth vocabularies:
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `composeExtensions[].authorization.authType`                        | `none`, `apiSecretServiceAuth`, **`microsoftEntra`**, `oAuth2.0`                                        |
 | `agentConnectors[].toolSource.remoteMcpServer.authorization.type`   | `None`, `OAuthPluginVault`, `ApiKeyPluginVault`, `DynamicClientRegistration`, `AzureKeyVault` (from v1.29) |
+| `agentConnectors[].toolSource.openApiConnector.authorization.type`  | `ConnectionVault` only (devPreview authoring; points at an existing logical custom-connector name)      |
 
-There is no `microsoftEntra` for agent connectors, and therefore **no SSO path**. Even for a first-party Microsoft API, the only OAuth-capable connector type is `OAuthPluginVault`, whose `referenceId` comes from `oauth/register` — which unconditionally requires a `clientId` the developer owns.
+`remoteMcpServer` has no `microsoftEntra` authorization type and no native Entra SSO option. Its explicit OAuth registration path uses `OAuthPluginVault`, whose `referenceId` comes from `oauth/register` and requires a `clientId` the developer owns. These statements do not describe the separate `openApiConnector`/`ConnectionVault` path.
+
+That remote-MCP limitation does not mean an OpenAPI custom-connector reference needs a new Entra
+registration. `openApiConnector` uses the separate `ConnectionVault` contract: its `referenceId`
+is the existing connector's logical name, and the platform resolves the endpoint and OpenAPI
+description. wiqd never asks for a URL, OpenAPI file, client id, secret, or connection-instance id
+on that path.
 
 > **`DynamicClientRegistration` is in the enum, but that is not how DCR is enabled.** The schema conditionally requires a `referenceId` for it, while dynamic client registration exists precisely because there is no pre-registered client to reference. In Copilot Cowork the supported way to enable DCR is to **omit the `authorization` node entirely**, which is what `wiqd plugin add connector --auth-type dcr` emits. Do not hand-author `{"type": "DynamicClientRegistration"}` expecting DCR behavior. (This does not rescue Entra-protected servers — see above.)
 
-**Consequence:** the developer must register an Entra application purely to obtain a client ID, even when both the client and the resource are Microsoft's. wiqd can wire the manifest and the vault record end to end, but it **cannot** create that app registration for them. Say so plainly rather than implying automation will handle it. (`DynamicClientRegistration` is a real connector auth type, but it is unusable against Entra — see [Entra does not support DCR](#entra-does-not-support-dcr).)
+**Consequence for an Entra-protected remote MCP server:** the developer needs an Entra client application they own, even when both the client and the resource are Microsoft's. wiqd can wire this remote-MCP manifest and vault record, but this guide does not create that client registration. Existing OpenAPI custom-connector references need no new Entra application or `oauth/register` configuration; they retain their `ConnectionVault` logical-name reference. For the remote-MCP DCR limitation, see [Entra does not support DCR](#entra-does-not-support-dcr).
 
 ### Provision does not verify that the scope can be consented to
 
-A successful provision says nothing about whether anyone in the tenant can actually grant the delegated scope the connector requests. When they cannot, the failure appears much later — at a **"Need admin approval"** page on first use, potentially days afterwards — with nothing linking it back to provisioning.
+A successful provision says nothing about whether anyone in the tenant can actually grant the delegated scope the remote MCP connector requests. When they cannot, the failure appears much later — at a **"Need admin approval"** page on first use, potentially days afterwards — with nothing linking it back to provisioning.
 
 This is sharpest when the resource app is homed in a different tenant from the client, which is the norm for first-party Microsoft APIs: the resource app object is not visible to the developer *or* to their tenant admin (`az ad app show` returns 404; only the service principal is visible), so **neither can pre-authorize the client**. Admin consent is the only lever.
 
-Before declaring an Entra-protected connector done, tell the user to confirm:
+Before declaring an Entra-protected remote MCP connector done, tell the user to confirm:
 
 1. Whether the delegated scope requires admin consent (scope `type` — `User` vs `Admin`).
 2. Whether the tenant's user-consent policy permits consenting to it at all.
