@@ -33,13 +33,13 @@ The publicly-documented Microsoft sources the [`rules.md`](rules.md) registry is
 - **Headings used by `rules.md`:**
   - "100 General" → `C1`–`C4`
   - "100.14 Functionality / app must be testable" → `S5`
-  - "1140.2 Listing requirements" → `M5`–`M14`, `B5`–`B9`
+  - "1140.2 Listing requirements" → `M6`–`M14`, `B5`–`B9`
   - "1140.4 Technical requirements" → `P3`–`P5`, `P8`, `G1`–`G3` (tabs, bots, mobile experience)
   - "1140.4.1 App listing content" → `B10`–`B13`, `M17`, `F1`–`F8`
   - "1140.4.1.3 Product name references" → `B10`, `B11`
   - "1140.4.1.4/5 Screenshots and video" → `F1`, `F4`, `F6`
   - "1140.4.1.19 Hyperlinks in description" → `F7`
-  - "1140.4.1.23 Publisher documentation URL" → `M17`
+  - "1140.4.1.23 Publisher documentation URL" → `M17` (optional top-level field; not `developer.publisherDocsUrl`)
   - "1140.4.1.24 AI disclosure" → `R7`
   - "1140.4.1.27 Mobile and M365 screenshots" → `F3`, `F5`
   - "1140.6.2 Publisher attestation" → `F2`
@@ -98,14 +98,29 @@ The publicly-documented Microsoft sources the [`rules.md`](rules.md) registry is
 ## Microsoft Teams App Manifest Schema
 
 - **URL:** https://learn.microsoft.com/microsoftteams/platform/resources/schema/manifest-schema
+- **Versioned JSON schemas verified for M5 / M17:**
+  - v1.13: https://developer.microsoft.com/en-us/json-schemas/teams/v1.13/MicrosoftTeams.schema.json
+  - v1.30: https://developer.microsoft.com/en-us/json-schemas/teams/v1.30/MicrosoftTeams.schema.json
 - **Owner:** Microsoft Teams platform team
 - **Scope:** The umbrella Teams app manifest — `id`, `name`, `description`, `icons`, `validDomains`, `webApplicationInfo`, `localizationInfo`, `copilotAgents`, `bots`, `composeExtensions`, `customEngineAgents`.
 - **Headings used by `rules.md`:**
+  - "`packageName`" → `M5` (only when supported and provided)
+  - "`publisherDocsUrl`" → `M17` (optional, top-level)
   - "`webApplicationInfo`" → `S1`–`S5`
   - "`localizationInfo`" → `L1`–`L5`
   - "`validDomains`" → `D1`–`D9`, `G1` (bundled-tab `configurationUrl` host coverage)
   - "`bots` / `configurableTabs` / `devicePermissions`" → `G1`–`G3` (bundled-surface co-presence with `copilotAgents`)
 - **Last validated:** 2026-05-27
+
+**M5 / M17 schema evidence (verified 2026-10-12):** v1.13 declares
+`packageName` with a 64-character limit but does not require it. v1.30 has
+no `packageName` property and sets root `additionalProperties: false`.
+Both versions declare optional top-level `publisherDocsUrl`; neither
+allows `developer.publisherDocsUrl` (`developer.additionalProperties: false`).
+M17 retains the HTTPS/no-credentials policy check when the URL is supplied.
+Partner Center's `supportDocumentUrl` is a different metadata surface,
+not proof that the manifest field exists and not a required package field.
+Inspect the exact selected schema before applying this evidence to other versions.
 
 ---
 

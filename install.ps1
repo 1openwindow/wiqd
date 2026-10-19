@@ -125,7 +125,7 @@ $script:FailedPluginHosts = @()
 
 
 # Stamped by sync-version.ps1 — do not edit manually.
-$script:WiqdVersion = "0.18.0"
+$script:WiqdVersion = "0.19.0"
 
 
 # nvm4w ships npm.ps1 which uses $MyInvocation.InvocationName to parse args.
@@ -367,9 +367,21 @@ function Test-WiqdPluginSourcePath {
 }
 
 function Test-WiqdPublicPluginSource {
-    param([string]$Source)
+    param([string]$Source, [string]$Repository)
     $normalized = $Source.Trim().Replace('\', '/') -replace '^git\+', '' -replace '^https?://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git/?$', '' -replace '/$', ''
-    return $normalized -eq 'microsoft/wiqd'
+    if ($Repository) { return $normalized -eq $Repository }
+    return $normalized -in @('microsoft/wiqd', 'github/awesome-copilot')
+}
+
+function Get-WiqdPluginTarget {
+    param([string]$Cli)
+    if ($Cli -eq 'copilot') {
+        return [pscustomobject]@{ marketplace = 'awesome-copilot'; repository = 'github/awesome-copilot'; id = 'wiqd@awesome-copilot' }
+    }
+    if ($Cli -eq 'claude') {
+        return [pscustomobject]@{ marketplace = 'wiqd'; repository = 'microsoft/wiqd'; id = 'wiqd@wiqd' }
+    }
+    throw 'Unknown plugin host.'
 }
 
 function Test-WiqdOwnedPluginSource {
@@ -395,46 +407,51 @@ function Test-WiqdOwnedPluginSource {
     } catch { return $false }
 }
 
-function Test-WiqdPluginManifest {
+function Test-WiqdPluginCache {
     param([string]$Cli)
     if ($Cli -eq 'copilot') {
-        return Test-Path -LiteralPath (Join-Path $HOME '.copilot/installed-plugins/wiqd/wiqd/.github/plugin/plugin.json') -PathType Leaf
+        foreach ($marketplace in @('wiqd', 'awesome-copilot')) {
+            if (Test-Path -LiteralPath (Join-Path $HOME ".copilot/installed-plugins/$marketplace/wiqd") -PathType Container) { return $true }
+        }
+        return $false
     }
     $cache = Join-Path $HOME '.claude/plugins/cache/wiqd/wiqd'
-    $manifests = @(Get-ChildItem -LiteralPath $cache -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '.claude-plugin/plugin.json') -PathType Leaf })
-    return $manifests.Count -gt 0
+    return Test-Path -LiteralPath $cache -PathType Container
 }
 
 function Get-WiqdPluginInventory {
     $legacy = if ($env:WIQD_MARKETPLACE_DIR) { $env:WIQD_MARKETPLACE_DIR } else { Join-Path $HOME '.wiqd/marketplace/wiqd' }
     foreach ($cli in @('copilot', 'claude')) {
         if (-not (Get-WiqdPluginHostPath $cli)) {
-            if (Test-WiqdPluginManifest $cli) { throw "$cli is unavailable but WIQD plugin state exists. Restore the host before retrying." }
+            if (Test-WiqdPluginCache $cli) { throw "$cli is unavailable but a WIQD plugin cache exists. Restore the host to inspect native plugin inventory before retrying." }
             continue
         }
         $result = Invoke-WiqdPluginHost $cli @('plugin', 'marketplace', 'list', '--json')
         Assert-WiqdPluginHostSuccess $result $cli
         $markets = @(ConvertFrom-WiqdMarketplaceList $cli $result.StdOut)
         $plugins = @(Get-WiqdNativePluginList $cli)
+        $destination = Get-WiqdPluginTarget $cli
         $wiqd = @($plugins | Where-Object { $_.id -ceq 'wiqd' -or $_.id -clike 'wiqd@*' })
-        $relevant = @($markets | Where-Object { $_.name -ceq 'wiqd' -or @($wiqd | ForEach-Object { $_.id -replace '^wiqd@', '' }) -ccontains $_.name -or (Test-WiqdPublicPluginSource $_.source) -or (Test-WiqdPluginSourcePath $_.source $legacy) })
-        $binding = @($markets | Where-Object { $_.name -ceq 'wiqd' })
-        $target = @($wiqd | Where-Object { $_.id -ceq 'wiqd@wiqd' })
+        $relevant = @($markets | Where-Object { $_.name -ceq 'wiqd' -or $_.name -ceq $destination.marketplace -or @($wiqd | ForEach-Object { $_.id -replace '^wiqd@', '' }) -ccontains $_.name -or (Test-WiqdPublicPluginSource $_.source) -or (Test-WiqdPluginSourcePath $_.source $legacy) })
+        $binding = @($markets | Where-Object { $_.name -ceq $destination.marketplace })
+        $target = @($wiqd | Where-Object { $_.id -ceq $destination.id })
+        $legacyBinding = @($markets | Where-Object { $_.name -ceq 'wiqd' })
+        $legacyTarget = @($wiqd | Where-Object { $_.id -ceq 'wiqd@wiqd' })
         $local = @($relevant | Where-Object { $_.kind -in @('Local', 'Directory') -or (Test-WiqdPluginSourcePath $_.source $legacy) })
         $state = 'absent'
         $reason = ''
         $targetError = ''
         if ($binding.Count -gt 1 -or $target.Count -gt 1) { $targetError = 'Requested WIQD plugin or marketplace identity is duplicated.' }
         elseif ($binding.Count -eq 1) {
-            if (Test-WiqdPublicPluginSource $binding[0].source) { $state = 'selected' }
-            else { $targetError = "marketplace 'wiqd' points to $($binding[0].source | ConvertTo-Json -Compress)." }
+            if ($binding[0].kind -ceq 'GitHub' -and (Test-WiqdPublicPluginSource $binding[0].source $destination.repository)) { $state = 'selected' }
+            else { $targetError = "marketplace '$($destination.marketplace)' points to $($binding[0].source | ConvertTo-Json -Compress)." }
         }
         if ($local.Count -gt 0) {
             $state = 'conflict'
             $reason = 'Local WIQD plugin ownership cannot be verified.'
-            if ($local.Count -eq 1 -and $binding.Count -eq 1 -and $local[0].name -ceq 'wiqd' -and $target.Count -eq 1 -and (Test-WiqdOwnedPluginSource $local[0].source)) {
+            if ($local.Count -eq 1 -and $legacyBinding.Count -eq 1 -and $local[0].name -ceq 'wiqd' -and $legacyTarget.Count -eq 1 -and (Test-WiqdOwnedPluginSource $local[0].source)) {
                 if (@($plugins | Where-Object { $_.id -clike '*@wiqd' -and $_.id -cne 'wiqd@wiqd' }).Count -gt 0) { $reason = "Other plugins also use marketplace 'wiqd'." }
-                else { $state = 'local'; $targetError = '' }
+                else { $state = 'local'; if ($cli -eq 'claude') { $targetError = '' } }
             }
         }
         if (@($wiqd | Where-Object { $_.id -ceq 'wiqd' -or @($markets.name) -cnotcontains ($_.id -replace '^wiqd@', '') }).Count -gt 0) {
@@ -451,9 +468,10 @@ function Get-WiqdPluginInventory {
 function Get-WiqdPluginRecovery {
     param($Current, [switch]$AfterUninstall)
     $cli = $Current.cli
+    $destination = Get-WiqdPluginTarget $cli
     $legacy = if ($env:WIQD_MARKETPLACE_DIR) { $env:WIQD_MARKETPLACE_DIR } else { Join-Path $HOME '.wiqd/marketplace/wiqd' }
     $wiqd = @($Current.plugins | Where-Object { $_.id -ceq 'wiqd' -or $_.id -clike 'wiqd@*' })
-    $markets = @($Current.marketplaces | Where-Object { $_.name -ceq 'wiqd' -or @($wiqd | ForEach-Object { $_.id -replace '^wiqd@', '' }) -ccontains $_.name -or (Test-WiqdPublicPluginSource $_.source) -or (Test-WiqdPluginSourcePath $_.source $legacy) })
+    $markets = @($Current.marketplaces | Where-Object { $_.name -ceq 'wiqd' -or $_.name -ceq $destination.marketplace -or @($wiqd | ForEach-Object { $_.id -replace '^wiqd@', '' }) -ccontains $_.name -or (Test-WiqdPublicPluginSource $_.source) -or (Test-WiqdPluginSourcePath $_.source $legacy) })
     $plugins = @($Current.plugins | Where-Object { $_.id -ceq 'wiqd' -or $_.id -clike 'wiqd@*' -or @($markets.name) -ccontains ($_.id -replace '^.*@', '') })
     $lines = @()
     foreach ($market in $markets) { $lines += "Marketplace: $($market.name | ConvertTo-Json -Compress) ($($market.source | ConvertTo-Json -Compress))" }
@@ -556,16 +574,21 @@ function Invoke-WiqdPluginHelper {
             foreach ($current in $targets) { Move-WiqdLegacyPlugin $current $internal }
         }
         if ($operation -eq 'install') {
+            if ($targets.Count -gt 0) {
+                $inventory = @(Get-WiqdPluginInventory)
+                Assert-WiqdPluginInventory $inventory $false $cli
+            }
+            $destination = Get-WiqdPluginTarget $cli
             $current = @($inventory | Where-Object { $_.cli -eq $cli }) | Select-Object -First 1
             if (-not $current -or $current.state -ne 'selected') {
-                $result = Invoke-WiqdPluginHost $cli @('plugin', 'marketplace', 'add', 'microsoft/wiqd')
+                $result = Invoke-WiqdPluginHost $cli @('plugin', 'marketplace', 'add', $destination.repository)
                 Assert-WiqdPluginHostSuccess $result
             }
-            $verb = if ($current -and $current.state -eq 'selected' -and @($current.plugins | Where-Object { $_.id -ceq 'wiqd@wiqd' }).Count -gt 0) { 'update' } else { 'install' }
+            $verb = if ($current -and $current.state -eq 'selected' -and @($current.plugins | Where-Object { $_.id -ceq $destination.id }).Count -gt 0) { 'update' } else { 'install' }
             $progress = if ($verb -eq 'update') { 'Updating' } else { 'Installing' }
-            [Console]::Error.WriteLine("$progress WIQD from microsoft/wiqd in ${cli}...")
-            Invoke-WiqdPluginMutation $cli @('plugin', $verb, 'wiqd@wiqd')
-            return [pscustomobject]@{ ExitCode = 0; Failed = $false; Combined = @("WIQD plugin ready ($cli): wiqd@wiqd from microsoft/wiqd.") }
+            [Console]::Error.WriteLine("$progress WIQD from $($destination.repository) in ${cli}...")
+            Invoke-WiqdPluginMutation $cli @('plugin', $verb, $destination.id)
+            return [pscustomobject]@{ ExitCode = 0; Failed = $false; Combined = @("WIQD plugin ready ($cli): $($destination.id) from $($destination.repository).") }
         }
         return [pscustomobject]@{ ExitCode = 0; Failed = $false; Combined = @(); Inventory = $inventory }
     } catch {
@@ -1276,8 +1299,12 @@ function Write-WiqdQuickstart {
         }
         Write-Host " Manual plugin setup (choose the host needing setup):" -ForegroundColor Cyan
         Write-Host " Resolve any reported errors or source conflicts first." -ForegroundColor Yellow
+        Write-Host " Copilot (Awesome Copilot):" -ForegroundColor Cyan
+        Write-Host "   copilot plugin install wiqd@awesome-copilot" -ForegroundColor White
+        Write-Host " Copilot alternative:" -ForegroundColor Cyan
         Write-Host "   copilot plugin marketplace add microsoft/wiqd" -ForegroundColor White
         Write-Host "   copilot plugin install wiqd@wiqd" -ForegroundColor White
+        Write-Host " Claude Code:" -ForegroundColor Cyan
         Write-Host "   claude plugin marketplace add microsoft/wiqd" -ForegroundColor White
         Write-Host "   claude plugin install wiqd@wiqd" -ForegroundColor White
         Write-Host ""

@@ -49,6 +49,7 @@ wiqd auth login --interactive
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--interactive` | `flag` | `false` | Allows each provider to use its interactive path and extends the per-provider timeout. It does not guarantee an account picker or a fresh account: a provider may reuse a usable cached session. Does not change the terminal requirement — see below. |
+| `--tenant <tenant-id>` | `string` | omitted | Supplies one nonzero tenant GUID only to runtime providers whose manifest explicitly declares the tenant input. Other providers continue their ordinary login. This does not coordinate or synchronize tenants across providers. |
 
 ### Examples
 
@@ -63,6 +64,27 @@ Allow each active provider to use its interactive path:
 ```bash
 wiqd auth login --interactive
 ```
+
+When Marketplace publishing is enabled and you already know the seller tenant
+GUID, select that tenant without entering the first-run directory menu:
+
+```bash
+wiqd auth login --interactive --tenant d795438c-7449-40e1-a515-a6a01862a861
+```
+
+WIQD validates and normalizes the GUID before provider discovery. Only a runtime
+login handler that explicitly declares the tenant input receives it. If no
+active provider accepts the input, the command fails before any provider runs.
+The selected provider still owns external-browser sign-in, identity and tenant
+verification, final confirmation, and secure persistence.
+
+When a valid `partner-center.json` already exists, `--tenant` is an assertion,
+not an override: a matching tenant follows the existing cache-first flow, while
+a different tenant fails before secure-store or network access. During
+first-run setup, rejecting the returned seller normally permits another
+directory/account attempt; with `--tenant`, retry remains pinned to that tenant
+and permits another account there. Restart with another tenant value, or omit
+the option, to select a different directory.
 
 ### `wiqd auth login` requires a real terminal
 
@@ -95,6 +117,8 @@ configuration problems produce it:
 
 | Error code                  | Meaning                                                                                                | Fix                                                                                                                    |
 | --------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_LOGIN_INVALID_TENANT` | `--tenant` is malformed or the all-zero GUID. | Supply a nonzero GUID in `8-4-4-4-12` format. |
+| `AUTH_LOGIN_TENANT_UNSUPPORTED` | No active runtime login provider declares the tenant input. | Activate a provider that documents tenant-scoped login, or omit `--tenant`. |
 | `AUTH_LOGIN_NO_PROVIDERS`   | No installed, activated extension contributes an auth provider, so there was nothing to sign in to.    | Run `wiqd ext list` to see what is installed, then activate a provider-contributing extension with `wiqd ext add <id>`. |
 | `selected_backend_missing`  | A backend-selector feature flag names a backend that no activated extension provides — it may be installed but not activated, or not installed at all. | Reset the flag (`wiqd config flags reset <flag>`) or activate the selected backend with `wiqd ext add <id>`.            |
 
@@ -155,8 +179,9 @@ without a tenant declaration retain their existing output.
 
 These diagnostics are advisory and do not change the command's existing exit
 behavior. Verify the target tenant in each provider's supported tooling when a
-warning appears. **This does not add automatic switching or a
-`wiqd auth login --tenant` option**, and `auth status` never signs users out.
+warning appears. The provider-scoped `wiqd auth login --tenant` input does not
+implement automatic or coordinated switching, and `auth status` never signs
+users out.
 
 Read each row independently. A signed-in row can coexist with another provider's
 signed-out row. `auth status` may silently refresh a provider-owned token while

@@ -2,7 +2,7 @@
 
 The numbered store-ops rules evaluated by the `da-store-ops-validator` skill. Each rule has a stable ID, a severity, a one-line summary, a citation (URL + heading), and a "How to check" hint the executing agent uses to evaluate it.
 
-**Registry version:** `2026-06-29` · **Rule count:** `138` · **Rule identity:** `sha256:3f412e98f9fa1e12967898a105384391555401a524c44fa90389e06802eb969a`
+**Registry version:** `2026-10-12` · **Rule count:** `138` · **Rule identity:** `sha256:3f412e98f9fa1e12967898a105384391555401a524c44fa90389e06802eb969a`
 
 **Severity legend:**
 
@@ -54,7 +54,7 @@ The numbered store-ops rules evaluated by the `da-store-ops-validator` skill. Ea
 | **M2**  | Must-fix    | `manifestVersion ≥ "1.13"` (required to declare `copilotAgents`)                                                                                                                                             |
 | **M3**  | Must-fix    | `id` is a lowercase GUID (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)                                                                                                                  |
 | **M4**  | Must-fix    | `version` is SemVer `MAJOR.MINOR.PATCH` (no pre-release suffix)                                                                                                                                              |
-| **M5**  | Must-fix    | `packageName` is reverse-DNS (e.g., `com.contoso.helper`) and ≤ 64 chars                                                                                                                                     |
+| **M5**  | Must-fix    | When supported by the selected Teams schema and provided, `packageName` is reverse-DNS (e.g., `com.contoso.helper`) and ≤ 64 chars                                                                           |
 | **M6**  | Must-fix    | `developer.name`, `developer.websiteUrl`, `developer.privacyUrl`, `developer.termsOfUseUrl` all present                                                                                                      |
 | **M7**  | Must-fix    | `developer.*` URLs are HTTPS, not `localhost`, and not AppSource/marketplace links                                                                                                                           |
 | **M8**  | Good-to-fix | `developer.mpnId` present (helps tie publisher identity across packages)                                                                                                                                     |
@@ -66,7 +66,7 @@ The numbered store-ops rules evaluated by the `da-store-ops-validator` skill. Ea
 | **M14** | Must-fix    | `accentColor` is `#RRGGBB` hex                                                                                                                                                                               |
 | **M15** | Must-fix    | `localizationInfo.defaultLanguageTag` is a valid BCP 47 tag if present (also checked by L1 in the Localization category — M15 catches it during the manifest pass so failures surface early)                 |
 | **M16** | Good-to-fix | Manifest does NOT use deprecated fields (`bots[].supportsCalling`, etc.)                                                                                                                                     |
-| **M17** | Must-fix    | `developer.publisherDocsUrl` is present in the manifest `developer` section (required for apps with documentation)                                                                                           |
+| **M17** | Must-fix    | When provided, top-level `publisherDocsUrl` is a literal absolute HTTPS URL with a non-empty hostname and no username or password                                                                            |
 | **M18** | Good-to-fix | `version` field is incremented compared to the previously-submitted version (required on resubmission — cannot fully verify from a single package; flag as advisory)                                         |
 
 ### How to check
@@ -75,18 +75,19 @@ The numbered store-ops rules evaluated by the `da-store-ops-validator` skill. Ea
 - **M2:** Parse `manifestVersion` with SemVer comparator. `<"1.13"` → fail.
 - **M3:** Regex.
 - **M4:** Regex `^\d+\.\d+\.\d+$`.
-- **M5:** Regex `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`.
+- **M5:** Use the Teams schema matching the packaged `$schema` and `manifestVersion`; inspect `properties.packageName` and `required`. If the field is absent and optional, or absent and unsupported by that schema, record `skip` with `applicability: not-applicable` and the schema URL/version/property evidence. Teams v1.13 supports but does not require the field; Teams v1.30 omits it and sets `additionalProperties: false`. Never add a schema-forbidden property to satisfy this rule. If provided and supported, require a string of at most 64 characters matching `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`. A supplied unsupported field, missing required field, or invalid supplied value fails. Unavailable schema evidence is `unknown`, not a non-blocking skip.
 - **M6, M7:** JSON pointer + URL parser. `URI.scheme === 'https'` and `URI.host !== 'localhost'` and host not in `{appsource.microsoft.com, store.microsoft.com, *.azurewebsites.net}`.
 - **M9–M14:** Length checks. For **M13**, split on `/\s+/` and count.
 - **M14:** Regex `^#[0-9A-Fa-f]{6}$`.
 - **M15:** BCP 47 — use Node `Intl.getCanonicalLocales(tag)` and treat throw as fail.
-- **M17:** Check `manifest.developer.publisherDocsUrl` exists and is a non-empty HTTPS URL.
+- **M17:** Inspect `manifest.json#/publisherDocsUrl` at the top level. The field is optional in Teams v1.13 and v1.30: if absent, confirm optionality in the selected schema and record `skip` with `applicability: not-applicable` and schema evidence, without requiring approval. When provided, parse the string with `new URL(value)` and require a literal absolute HTTPS URL, non-empty hostname, and no username or password; malformed, HTTP, empty, non-string, or credential-bearing values fail. Never require `developer.publisherDocsUrl` or substitute Partner Center's separate `supportDocumentUrl` for this check. Schema-forbidden properties still fail schema validation; unavailable schema evidence is `unknown` and blocking.
 - **M18:** Compare `manifest.version` against a previously-known version if available. If no prior version is provided, skip with advisory note to verify in Partner Center.
 
 ### Citations
 
 - DA Manifest schema (1.13+) — `references.md#da-manifest-schema`.
 - Commercial Marketplace §1140.2 (Listing requirements) → `references.md#commercial-marketplace-1140`.
+- **M5 / M17:** Microsoft Teams app manifest schema → [schema versions and metadata applicability](references.md#microsoft-teams-app-manifest-schema). Use the schema of the packaged Teams app, not the declarative-agent JSON schema.
 
 ---
 
@@ -557,6 +558,7 @@ When updating this registry:
 
 | Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-10-12 | Corrected M5 to respect schema support and optionality instead of requiring `packageName` universally. Corrected M17 to validate optional top-level `publisherDocsUrl`, not a required field under `developer`. Invalid supplied values and unknown schema evidence remain blocking. Registry version updated; 138 stable IDs, severities, and sorted rule-ID identity unchanged.                                                                                                                                                                                                                                        |
 | 2026-08-12 | Removed the two-tier (package-advisory + publish-context-enforcement) model: this file ships to 3P, and describing the 1P-only Partner Center publish command's behavior here is out of place regardless of gating. N5's auto-mapped-title note and F3's mobile-screenshot advisory were relocated to the 1P-only extension that owns the publish command; F1/F2/F4–F6/F9–F12's publish-context notes were dropped as either no-ops or duplicates of guidance already documented there. This registry now documents package-only (validate-time) advisories exclusively — rule IDs, severities, and citations unchanged. |
 | 2026-08-06 | Publish-time reality check: F4 and F11 are pixel-content judgments that no local check can make, so their publish-context handling is corrected from "enforce" to **advisory** (severity still describes what the reviewer enforces). F12 is corrected to **partially enforced** — the exact 1366×768 dimension gate is hard, sharpness/legibility are reviewer-judged. F4's guidance now states that the caption must be rendered INTO the image; Partner Center exposes no caption field. Severities and counts unchanged.                                                                                             |
 | 2026-06-29 | Publish-time enforcement: Upgraded F4, F6, F11 to Must-fix at publish time; updated F6 to enforce max 5 screenshots; added F12 (high-resolution screenshots). 138 rules total.                                                                                                                                                                                                                                                                                                                                                                                                                                           |

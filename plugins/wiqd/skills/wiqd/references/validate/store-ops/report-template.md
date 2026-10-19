@@ -104,21 +104,21 @@ Emit one of three blocks based on counts:
 ```
 1. Address every Must-fix finding above. Re-run this audit.
 2. Once all Must-fix items pass, review Good-to-fix findings — fix the ones that apply.
-3. Open the relevant review-gate work items via `wiqd agent review start`.
+3. Open the relevant review-gate work items in the owning tracking system.
 ```
 
 **Case B — `must_fail == 0` and `good_fail > 0`:**
 
 ```
 1. Review Good-to-fix findings and decide which to act on (some are advisory).
-2. Open the relevant review-gate work items via `wiqd agent review start`.
+2. Open the relevant review-gate work items in the owning tracking system.
 3. Proceed to publish via `wiqd agent publish` or your Partner Center workflow.
 ```
 
 **Case C — `must_fail == 0` and `good_fail == 0`:**
 
 ```
-1. Open the relevant review-gate work items via `wiqd agent review start`.
+1. Open the relevant review-gate work items in the owning tracking system.
 2. Proceed to publish via `wiqd agent publish` or your Partner Center workflow.
 ```
 
@@ -175,8 +175,8 @@ The JSON envelope follows the `wiqd` JSON output-format contract: `status`, `com
   "status": "ok",
   "command": "store-ops-audit",
   "data": {
-    "auditedAt": "2026-05-27T14:35:00-07:00",
-    "rulesVersion": "2026-06-29",
+    "auditedAt": "2026-10-12T22:00:00-04:00",
+    "rulesVersion": "2026-10-12",
     "rulesCount": 138,
     "rulesIdentity": "sha256:3f412e98f9fa1e12967898a105384391555401a524c44fa90389e06802eb969a",
     "package": {

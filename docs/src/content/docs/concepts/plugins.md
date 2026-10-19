@@ -49,7 +49,7 @@ A plugin can carry one or more of these, declared as top-level components in the
 | ---------------- | ---------------------------------------------- | -------------------------------------------- |
 | An **agent**     | `copilotAgents.declarativeAgents` (→ `declarativeAgent.json`) | [`wiqd plugin add agent`](/cli/reference/#wiqd-plugin-add-agent) |
 | **Skills**       | `agentSkills[]` (each a `SKILL.md` folder)     | [`wiqd plugin add skill`](/cli/reference/#wiqd-plugin-add-skill) |
-| **Connectors**   | `agentConnectors[]` (remote MCP servers)       | [`wiqd plugin add connector`](/cli/reference/#wiqd-plugin-add-connector) |
+| **Connectors**   | `agentConnectors[]` (remote MCP or existing OpenAPI custom connectors) | [`wiqd plugin add connector`](/cli/reference/#wiqd-plugin-add-connector) |
 
 A declarative agent brings its own API plugins (`actions[]`) and MCP references along with it —
 those live inside the agent's own manifest, not as separate top-level plugin components.
@@ -64,6 +64,28 @@ than trusting the cache.
 Teams schema that supports `agentSkills` (1.28) and, at 1.29, url-only `agentConnectors` (where
 `mcpToolDescription` becomes optional) — so composed capabilities validate against a stable schema
 rather than `devPreview`.
+
+That stable default remains unchanged when you add a remote MCP connector. Referencing an existing
+OpenAPI custom connector is a separate, explicitly preview-only path:
+
+```bash
+wiqd plugin add connector --kind openapi --name "Contoso Kusto" \
+  --description "Existing custom connector" \
+  --auth-reference-id shared_kusto --dev-preview
+```
+
+This writes only a `ConnectionVault` logical-name pointer and updates both app-manifest version
+fields to `devPreview`. It does not create the custom connector, invent an endpoint, or treat a
+tentative numbered manifest version as supported.
+
+Preview authoring does not guarantee that the build loop below can complete. The pinned fx-core
+schema can reject `agentConnectors[].toolSource.openApiConnector` during packaging before a ZIP
+exists. That is a local packaging limitation, not evidence of missing server-side AVL support.
+Deep validation needs a built ZIP, including one supplied through `--package-file`. Preserve the
+connector and inspect the actual deep-validation verdict; do not rewrite or drop it to bypass
+the local schema. See the
+[plugin authoring reference](/getting-started/plugin-reference/#existing-openapi-custom-connectors)
+for the current limitations.
 
 ## The build loop
 
@@ -113,11 +135,11 @@ plugin can be skill-only.
 ### 2. `wiqd agent add skill` — an agent's own skill
 
 This uses the core FxCore backend to add a skill directly into an **existing agent project**,
-in-place. It produces the same kind of artifact (a `SKILL.md` folder referenced from
-`agentSkills[]`), but the command operates on an agent project rather than a standalone plugin, and
-it additionally supports `--from <path>` to import an existing skill directory or `.zip`. Use this
-when you're extending an agent you already have; use `wiqd plugin add skill` when you're composing
-a new, independent plugin from scratch.
+in-place. It produces a `SKILL.md` folder referenced from the declarative-agent manifest's
+`agent_skills[]`; it does not add the root Cowork `agentSkills[]` registration. The command also
+supports `--from <path>` to import an existing skill directory or `.zip`. Use this when you're
+extending an agent you already have; use `wiqd plugin add skill` when you're composing a new,
+independent Cowork plugin from scratch.
 
 `wiqd agent add skill` sits behind the `agent-skills` [feature flag](/cli/reference/#feature-flags)
 (off by default) while the declarative-agent manifest schema for skills is not yet

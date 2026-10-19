@@ -81,7 +81,7 @@ plugin_install_cancelled=false
 failed_plugin_hosts=()
 
 # Stamped by sync-version.ps1 — do not edit manually.
-WIQD_INSTALLER_VERSION="0.18.0"
+WIQD_INSTALLER_VERSION="0.19.0"
 
 # ─────────────────────────────────────────────
 # Parse arguments
@@ -451,8 +451,12 @@ print_wiqd_quickstart() {
         fi
         printf "${CYAN} Manual plugin setup (choose the host needing setup):${RESET}\n"
         printf "${YELLOW} Resolve any reported errors or source conflicts first.${RESET}\n"
+        printf "${CYAN} Copilot (Awesome Copilot):${RESET}\n"
+        printf "${WHITE}   copilot plugin install wiqd@awesome-copilot${RESET}\n"
+        printf "${CYAN} Copilot alternative:${RESET}\n"
         printf "${WHITE}   copilot plugin marketplace add microsoft/wiqd${RESET}\n"
         printf "${WHITE}   copilot plugin install wiqd@wiqd${RESET}\n"
+        printf "${CYAN} Claude Code:${RESET}\n"
         printf "${WHITE}   claude plugin marketplace add microsoft/wiqd${RESET}\n"
         printf "${WHITE}   claude plugin install wiqd@wiqd${RESET}\n"
         echo ""
@@ -504,10 +508,16 @@ const fail = (message) => { throw new Error(message); };
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const identifier = (value) => nonempty(value) && !/[\s@]/.test(value);
+const targetForHost = (cli) => {
+    if (cli === "copilot") return { marketplace: "awesome-copilot", repository: "github/awesome-copilot", id: "wiqd@awesome-copilot" };
+    if (cli === "claude") return { marketplace: "wiqd", repository: "microsoft/wiqd", id: "wiqd@wiqd" };
+    fail("Unknown plugin host");
+};
 const recovery = (current, afterUninstall = false) => {
     const { cli, plugins: allPlugins, marketplaces } = current;
+    const destination = targetForHost(cli);
     const wiqd = allPlugins.filter((entry) => entry.id === "wiqd" || entry.id.startsWith("wiqd@"));
-    const markets = marketplaces.filter((entry) => entry.name === "wiqd" || entry.publicSource || entry.localSource || wiqd.some((plugin) => plugin.id === "wiqd@" + entry.name));
+    const markets = marketplaces.filter((entry) => entry.name === "wiqd" || entry.name === destination.marketplace || entry.publicSource || entry.localSource || wiqd.some((plugin) => plugin.id === "wiqd@" + entry.name));
     const plugins = allPlugins.filter((entry) => wiqd.includes(entry) || markets.some((market) => entry.id.endsWith("@" + market.name)));
     const lines = markets.map((entry) => `Marketplace: ${JSON.stringify(entry.name)} (${JSON.stringify(entry.source)})`);
     lines.push(`Affected plugins: ${plugins.length ? plugins.map((entry) => JSON.stringify(entry.id)).join(", ") : "none"}`);
@@ -520,6 +530,7 @@ const recovery = (current, afterUninstall = false) => {
 try {
     switch (operation) {
         case "manifest": check(input()?.name === "wiqd"); break;
+        case "target": output(targetForHost(args[0])); break;
         case "markets": {
             const entries = input();
             if (!Array.isArray(entries)) fail("Expected JSON marketplace array");
@@ -583,7 +594,7 @@ try {
         }
         case "entries": for (const entry of input()) output(entry); break;
         case "field": {
-            if (!["source", "cli", "state"].includes(args[0])) fail("Invalid inventory field");
+            if (!["source", "cli", "state", "marketplace", "repository", "id"].includes(args[0])) fail("Invalid inventory field");
             const value = input()[args[0]];
             if (typeof value !== "string") fail("Missing inventory field");
             console.log(value);
@@ -592,7 +603,7 @@ try {
         case "market-add": {
             const entries = input();
             const entry = JSON.parse(args[0]);
-            entries.push({ ...entry, ownedSource: args[1] === "true", localSource: args[2] === "true", publicSource: args[3] === "true" });
+            entries.push({ ...entry, ownedSource: args[1] === "true", localSource: args[2] === "true", publicSource: args[3] === "true", targetSource: args[4] === "true" });
             output(entries);
             break;
         }
@@ -600,22 +611,25 @@ try {
             const [cli, marketJson, pluginJson] = args;
             const marketplaces = JSON.parse(marketJson);
             const plugins = JSON.parse(pluginJson);
+            const destination = targetForHost(cli);
             const wiqd = plugins.filter((entry) => entry.id === "wiqd" || entry.id.startsWith("wiqd@"));
-            const relevant = marketplaces.filter((entry) => entry.name === "wiqd" || entry.publicSource || entry.localSource || wiqd.some((plugin) => plugin.id === "wiqd@" + entry.name));
-            const binding = marketplaces.filter((entry) => entry.name === "wiqd");
-            const target = wiqd.filter((entry) => entry.id === "wiqd@wiqd");
+            const relevant = marketplaces.filter((entry) => entry.name === "wiqd" || entry.name === destination.marketplace || entry.publicSource || entry.localSource || wiqd.some((plugin) => plugin.id === "wiqd@" + entry.name));
+            const binding = marketplaces.filter((entry) => entry.name === destination.marketplace);
+            const target = wiqd.filter((entry) => entry.id === destination.id);
+            const legacyBinding = marketplaces.filter((entry) => entry.name === "wiqd");
+            const legacyTarget = wiqd.filter((entry) => entry.id === "wiqd@wiqd");
             const local = relevant.filter((entry) => ["Local", "Directory"].includes(entry.kind) || entry.localSource);
             let state = "absent", reason = "", targetError = "";
             if (binding.length > 1 || target.length > 1) targetError = "Requested WIQD plugin or marketplace identity is duplicated.";
             else if (binding.length === 1) {
-                if (binding[0].publicSource) state = "selected";
-                else targetError = `marketplace \u0027wiqd\u0027 points to ${JSON.stringify(binding[0].source)}.`;
+                if (binding[0].kind === "GitHub" && binding[0].targetSource) state = "selected";
+                else targetError = `marketplace \u0027${destination.marketplace}\u0027 points to ${JSON.stringify(binding[0].source)}.`;
             }
             if (local.length) {
                 state = "conflict"; reason = "Local WIQD plugin ownership cannot be verified.";
-                if (local.length === 1 && binding.length === 1 && local[0].name === "wiqd" && target.length === 1 && local[0].ownedSource) {
+                if (local.length === 1 && legacyBinding.length === 1 && local[0].name === "wiqd" && legacyTarget.length === 1 && local[0].ownedSource) {
                     if (plugins.some((entry) => entry.id.endsWith("@wiqd") && entry.id !== "wiqd@wiqd")) reason = "Other plugins also use marketplace \u0027wiqd\u0027.";
-                    else { state = "local"; targetError = ""; }
+                    else { state = "local"; if (cli === "claude") targetError = ""; }
                 }
             }
             if (wiqd.some((entry) => entry.id === "wiqd" || !marketplaces.some((market) => entry.id === "wiqd@" + market.name))) {
@@ -675,7 +689,7 @@ try {
         case "targets": for (const entry of input().filter((entry) => entry.state === "local" && (args[1] === "true" || entry.cli === args[0]))) output(entry); break;
         case "update": {
             const entry = input();
-            check(entry.state === "selected" && entry.plugins.some((plugin) => plugin.id === "wiqd@wiqd"));
+            check(entry.state === "selected" && entry.plugins.some((plugin) => plugin.id === targetForHost(entry.cli).id));
             break;
         }
         default: fail("Unknown plugin data operation");
@@ -699,14 +713,14 @@ wiqd_plugin_host() {
 
 wiqd_plugin_kill_tree() {
     local parent="$1" child
+    local -a ps_args
+    case "${OSTYPE:-}" in
+        msys*|cygwin*) ps_args=(-a) ;;
+        *) ps_args=(-eo 'pid=,ppid=') ;;
+    esac
     while read -r child; do
         [[ -n "$child" ]] && wiqd_plugin_kill_tree "$child"
-    done < <(
-        case "${OSTYPE:-}" in
-            msys*|cygwin*) ps -a ;;
-            *) ps -eo pid=,ppid= ;;
-        esac | awk -v parent="$parent" '$2 == parent { print $1 }'
-    )
+    done < <(ps "${ps_args[@]}" | awk -v parent="$parent" '$2 == parent { print $1 }')
     kill -TERM "$parent" 2>/dev/null || true
     kill -KILL "$parent" 2>/dev/null || true
 }
@@ -812,7 +826,7 @@ wiqd_plugin_public_source() {
         *.git) source="${source%.git}" ;;
     esac
     source="${source%/}"
-    [[ "$source" == microsoft/wiqd ]]
+    if [[ -n "${2:-}" ]]; then [[ "$source" == "$2" ]]; else [[ "$source" == microsoft/wiqd || "$source" == github/awesome-copilot ]]; fi
 }
 
 wiqd_plugin_path() {
@@ -838,16 +852,19 @@ wiqd_plugin_owned() {
 }
 
 wiqd_plugin_markets() {
-    local cli="$1" parsed entry source owned local_source public_source result='[]'
+    local cli="$1" parsed entry source owned local_source public_source target_source destination repository result='[]'
+    destination=$(wiqd_plugin_json target "$cli") || return 1
+    repository=$(wiqd_plugin_json field repository <<<"$destination") || return 1
     wiqd_plugin_require "$cli" plugin marketplace list --json || return $?
     parsed=$(wiqd_plugin_parse_markets "$cli" <"$wiqd_plugin_directory/stdout") || return 1
     while IFS= read -r entry; do
         source=$(wiqd_plugin_json field source <<<"$entry") || return 1
-        owned=false; local_source=false; public_source=false
+        owned=false; local_source=false; public_source=false; target_source=false
         if wiqd_plugin_owned "$source"; then owned=true; fi
         if [[ "$(wiqd_plugin_path "$source")" == "$(wiqd_plugin_path "${WIQD_MARKETPLACE_DIR:-$HOME/.wiqd/marketplace/wiqd}")" ]]; then local_source=true; fi
         if wiqd_plugin_public_source "$source"; then public_source=true; fi
-        result=$(wiqd_plugin_json market-add "$entry" "$owned" "$local_source" "$public_source" <<<"$result") || return 1
+        if wiqd_plugin_public_source "$source" "$repository"; then target_source=true; fi
+        result=$(wiqd_plugin_json market-add "$entry" "$owned" "$local_source" "$public_source" "$target_source" <<<"$result") || return 1
     done < <(wiqd_plugin_json entries <<<"$parsed")
     printf '%s\n' "$result"
 }
@@ -870,15 +887,11 @@ wiqd_plugin_list() {
     wiqd_plugin_parse_copilot <"$wiqd_plugin_directory/stdout" || return 1
 }
 
-wiqd_plugin_manifest() {
-    local manifest
+wiqd_plugin_cache() {
     if [[ "$1" == copilot ]]; then
-        [[ -f "$HOME/.copilot/installed-plugins/wiqd/wiqd/.github/plugin/plugin.json" ]]
+        [[ -d "$HOME/.copilot/installed-plugins/wiqd/wiqd" || -d "$HOME/.copilot/installed-plugins/awesome-copilot/wiqd" ]]
     else
-        for manifest in "$HOME"/.claude/plugins/cache/wiqd/wiqd/*/.claude-plugin/plugin.json; do
-            [[ ! -f "$manifest" ]] || return 0
-        done
-        return 1
+        [[ -d "$HOME/.claude/plugins/cache/wiqd/wiqd" ]]
     fi
 }
 
@@ -886,7 +899,7 @@ wiqd_plugin_inventory() {
     local cli markets plugins entry inventory='[]'
     for cli in copilot claude; do
         if ! wiqd_plugin_host "$cli" >/dev/null 2>&1; then
-            if wiqd_plugin_manifest "$cli"; then printf '%s\n' "$cli is unavailable but WIQD plugin state exists. Restore the host before retrying." >&2; return 1; fi
+            if wiqd_plugin_cache "$cli"; then printf '%s\n' "$cli is unavailable but a WIQD plugin cache exists. Restore the host to inspect native plugin inventory before retrying." >&2; return 1; fi
             continue
         fi
         markets=$(wiqd_plugin_markets "$cli") || return $?
@@ -943,7 +956,7 @@ wiqd_plugin_migrate() {
 }
 
 invoke_wiqd_plugin_helper() (
-    local operation="${1:-}" cli=copilot internal=false inventory targets current verb detected=false
+    local operation="${1:-}" cli=copilot internal=false inventory targets current verb destination repository plugin detected=false
     case "$operation:$#" in
         install:1|check:1|migrate:1) ;;
         install:3) [[ "$2" == --cli && ( "$3" == copilot || "$3" == claude ) ]] || return 2; cli="$3" ;;
@@ -951,7 +964,7 @@ invoke_wiqd_plugin_helper() (
     esac
     [[ "$operation" == install ]] || internal=true
     for current in copilot claude; do
-        if wiqd_plugin_host "$current" >/dev/null 2>&1 || wiqd_plugin_manifest "$current"; then detected=true; fi
+        if wiqd_plugin_host "$current" >/dev/null 2>&1 || wiqd_plugin_cache "$current"; then detected=true; fi
     done
     if ! $detected && $internal; then printf '[]\n'; return 0; fi
     if ! command -v node >/dev/null 2>&1; then
@@ -981,15 +994,22 @@ invoke_wiqd_plugin_helper() (
         done <<<"$targets"
     fi
     if [[ "$operation" != install ]]; then printf '%s\n' "$inventory"; return 0; fi
+    if [[ -n "$targets" ]]; then
+        inventory=$(wiqd_plugin_inventory) || return $?
+        wiqd_plugin_guard "$inventory" "$internal" "$cli" || return $?
+    fi
+    destination=$(wiqd_plugin_json target "$cli") || return 1
+    repository=$(wiqd_plugin_json field repository <<<"$destination") || return 1
+    plugin=$(wiqd_plugin_json field id <<<"$destination") || return 1
     current=$(wiqd_plugin_json host "$cli" <<<"$inventory") || return 1
     if [[ "$(wiqd_plugin_json field state <<<"$current")" != selected ]]; then
-        wiqd_plugin_require "$cli" plugin marketplace add microsoft/wiqd || return $?
+        wiqd_plugin_require "$cli" plugin marketplace add "$repository" || return $?
     fi
     verb=install
     if wiqd_plugin_json update <<<"$current"; then verb=update; fi
-    if [[ "$verb" == update ]]; then printf '%s\n' "Updating WIQD from microsoft/wiqd in $cli..." >&2; else printf '%s\n' "Installing WIQD from microsoft/wiqd in $cli..." >&2; fi
-    wiqd_plugin_mutation "$cli" plugin "$verb" wiqd@wiqd || return $?
-    printf '%s\n' "WIQD plugin ready ($cli): wiqd@wiqd from microsoft/wiqd."
+    if [[ "$verb" == update ]]; then printf '%s\n' "Updating WIQD from $repository in $cli..." >&2; else printf '%s\n' "Installing WIQD from $repository in $cli..." >&2; fi
+    wiqd_plugin_mutation "$cli" plugin "$verb" "$plugin" || return $?
+    printf '%s\n' "WIQD plugin ready ($cli): $plugin from $repository."
     ) &
     worker=$!
     wait "$worker"
