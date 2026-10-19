@@ -15,7 +15,7 @@ This guide explains how to configure OAuth authentication for MCP server plugins
 > - You are referencing an **existing OpenAPI custom connector** through
 >   `toolSource.openApiConnector` → do not create an Entra app or `oauth/register` block for this
 >   guide. Use `wiqd plugin add connector --kind openapi --name "<name>" --description "<description>" --auth-reference-id <logical-name> --dev-preview`;
->   the reference is the connector's logical name (for example `shared_kusto`), not a
+>   the reference is the connector's logical name, not a
 >   secret, connection instance, or OAuth registration id.
 
 ---

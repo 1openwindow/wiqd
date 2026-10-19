@@ -78,6 +78,17 @@ Open [`store-ops/rules.md`](store-ops/rules.md) and evaluate every rule, in cate
    approval evidence.
 4. On `fail` or `warn`, capture: the offending value, the file + JSON pointer (e.g., `declarativeAgent.json#/instructions`), the rule ID, and the policy citation.
 
+For **M5 / M17**, establish applicability from the Teams app schema matching
+the packaged `$schema` and `manifestVersion`. Record the schema URL, version,
+and property/required-field evidence. Missing schema evidence is an `unknown`,
+blocking Must-fix skip, not permission to assume the field is optional.
+An absent optional or unsupported `packageName` is not applicable; do not add
+schema-forbidden fields. `publisherDocsUrl` is optional and top-level in the
+supported v1.13/v1.30 schemas, not a required `developer` property. Validate
+supplied values as specified in the registry; a non-blocking absence is not
+a waiver of an invalid supplied value. These decisions do not approve any
+other blocked check, including screenshot suitability.
+
 **Severity model:**
 
 - **Must-fix** — Microsoft-listed rejection reason or required by the manifest schema. A single Must-fix → audit fails.

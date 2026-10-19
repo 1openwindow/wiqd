@@ -11,8 +11,9 @@ packaging are enabled.
 > `agentSkills[]` (Teams app manifest, camelCase) registers app-level Cowork skills, while
 > `agent_skills[]` (declarative-agent manifest, snake_case) registers DA Chat skills. Both use a
 > `folder` property and they may deliberately point at the same folder, but they may also name
-> different folders. `wiqd agent add skill` currently writes both registrations for its generated
-> flow; that convenience is not a platform requirement for a hand-authored DA-only skill. Read
+> different folders. `wiqd plugin add skill` writes the root Cowork registration, while
+> `wiqd agent add skill` writes the DA registration. Neither command silently adds the other
+> host's registration. Read
 > [The Two Surfaces](#the-two-surfaces) before editing either one.
 
 ## Overview
@@ -47,13 +48,14 @@ bytes.
 | Written to        | `appPackage/manifest.json`                                              | the declarative-agent manifest                                                                         |
 | Copilot exposure  | implied by the entry's presence in the array                           | explicit, via the `expose_skill_to_copilot` boolean — not set automatically (see below)               |
 | Validation        | `ASKILL-*` codes (e.g. `ASKILL-P002` if the folder has no `SKILL.md`)   | not yet covered by any `ASKILL-*` code — see below                                                     |
-| Produced by       | `wiqd agent add skill`, automatically                                   | also `wiqd agent add skill`, automatically — `folder` only; add `expose_skill_to_copilot` yourself     |
+| Produced by       | `wiqd plugin add skill`                                                  | `wiqd agent add skill` — `folder` only; add `expose_skill_to_copilot` yourself                         |
 
-Do not add a second registration merely to satisfy WIQD packaging. `wiqd agent add skill` writes
-both entries today and points them at one folder, but hand-authored projects may keep the Cowork and
-DA Chat skill sets separate. A DA-only folder is included by fx-core only when the `agent-skills`
-packaging capability is active; WIQD now refuses package/provision while that capability is off
-instead of producing a known-incomplete archive.
+Do not add a second registration merely to satisfy WIQD packaging. The commands preserve the
+surface boundary: `wiqd plugin add skill` writes `manifest.json#agentSkills[]`, and
+`wiqd agent add skill` writes the declarative-agent manifest's `agent_skills[]`. A DA-only folder
+is included by fx-core only when the `agent-skills` packaging capability is active; WIQD now
+refuses package/provision while that capability is off instead of producing a known-incomplete
+archive.
 
 **Current tooling status:** wiqd's static validator (MVL) does not yet recognize `agent_skills` as
 a known member of the declarative-agent manifest — adding the key today is flagged as an
@@ -110,9 +112,9 @@ Reach for an Agent Skill when the agent needs:
 
 ## Where a Skill Lives: Plugin, Agent, or Both
 
-Two different `wiqd` commands can produce the same kind of artifact — a `SKILL.md` folder
-registered in `agentSkills[]` — but they operate on different kinds of projects, and picking the
-right one depends on what you already have:
+Two different `wiqd` commands can produce the same kind of artifact — a `SKILL.md` folder — but
+they register it on different host surfaces and operate on different kinds of projects. Pick the
+command based on the host and project you already have:
 
 | Question                                                                                   | Command                                                                 | What it does                                                                                                                                                         |
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -120,12 +122,10 @@ right one depends on what you already have:
 | Extending an agent project you **already have**?                                          | `wiqd agent add skill`                                                  | Adds the skill directly into that **existing agent project**, in place, through the in-process wiqd core lifecycle backend. Also supports `--from` to import an existing skill directory or `.zip`.                |
 | Want the skill **exposed to Copilot directly**, on top of however it got there?           | Add `expose_skill_to_copilot: true` to the matching `agent_skills[]` entry | The entry itself is already written for you by `wiqd agent add skill` — it just doesn't set this property. See [The Declarative-Agent Registration](#the-declarative-agent-registration-agent_skills). |
 
-In short: `wiqd agent add skill` extends a project you're already building; `wiqd plugin add skill`
-starts a new one and doesn't require an agent to exist first. Both author a top-level
-`agentSkills[]` Cowork registration. `wiqd agent add skill` additionally writes an
-`agent_skills[]` DA Chat registration because it operates on a project that already has a
-declarative-agent manifest. A skill-only plugin from `wiqd plugin add skill` has no DA manifest,
-and it does not need one unless the author separately adds a declarative agent and DA Chat skills.
+In short: `wiqd agent add skill` extends an existing agent project by writing an
+`agent_skills[]` DA Chat registration. `wiqd plugin add skill` starts or extends a plugin project
+by writing a top-level `agentSkills[]` Cowork registration and does not require an agent to exist.
+A project that intentionally targets both hosts must maintain both registrations explicitly.
 
 ## Authoring Flow
 
@@ -171,9 +171,10 @@ appPackage/
         └── SKILL.md
 ```
 
-...and adds a matching entry to `appPackage/manifest.json`'s `agentSkills[]` array — see
-[Manifest Shape](#manifest-shape-agentskills-shipped-today). You should not need to hand-edit
-`manifest.json` for a normal add or import.
+...and adds a matching entry to the declarative-agent manifest's `agent_skills[]` array — see
+[The Declarative-Agent Registration](#the-declarative-agent-registration-agent_skills). You
+should not need to hand-edit that array for a normal add or import. The command does not add a
+root `appPackage/manifest.json#agentSkills[]` Cowork registration.
 
 **Importing** (`--from`) registers content that already exists — a directory under
 `appPackage/skills/`, or the contents of an external `.zip` — so Step 4 doesn't apply; the
@@ -184,10 +185,10 @@ re-validate the frontmatter for you.
 
 See [SKILL.md Frontmatter Contract](#skillmd-frontmatter-contract) for the required frontmatter
 fields. In the body, write clear, imperative instructions — the same way you'd write playbook
-steps for a person, since Copilot follows them literally once the skill activates. Keep any
-companion files under `references/` (loaded on demand) or `scripts/` (executed, never loaded into
-context) inside the same folder, not scattered at the folder root alongside `SKILL.md` — see
-[Companion Files](#companion-files) for size and path limits.
+steps for a person, since Copilot follows them literally once the skill activates. Keep companion
+files inside the skill folder. `references/`, `scripts/`, and `assets/` are useful organizational
+conventions, but custom descendant files and directories are allowed by the Agent Skills format —
+see [Companion Files](#companion-files) for host-specific limits.
 
 ### Step 5: Validate and Package
 
@@ -240,20 +241,65 @@ description: Explains HR policies in plain language when a user asks about leave
 
 ## Companion Files
 
-A skill folder may carry companion files under `references/` (loaded on demand) and `scripts/`
-(executed, never loaded into context — see [Runtime Behavior](#runtime-behavior)), subject to
-platform limits:
+Agent Skills requires `SKILL.md`. The following descendant directories are conventions, not an
+exhaustive allowlist:
 
-| Limit                               | Value          |
-| -------------------------------------- | ---------------- |
-| Files per skill                     | At most 20     |
-| Size per individual file            | At most 5 MB   |
-| Total size across the skill folder  | At most 10 MB  |
+- `references/` — supporting documentation, schemas, data files, and examples that Copilot can
+  load on demand.
+- `scripts/` — executable helpers, subject to the selected host's supported script types and
+  runtime.
+- `assets/` — templates, images, and other output resources.
 
-Every companion-file path must also be relative (no absolute paths), free of `..` segments,
-backslashes, and null bytes; not a hidden file (no leading `.` in the filename); not a Windows
-reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without an
-extension); and composed of safe filename characters only.
+Custom names such as `playbooks/` or `workflows/`, and companion files directly under the skill
+folder, are format-valid. Do not report a file as misplaced or unsupported solely because it is
+outside `references/`, `scripts/`, or `assets/`. Host-specific restrictions still apply to every
+companion file.
+
+### Cowork plugin limits (`manifest.json#agentSkills[]`)
+
+For a skill registered in the root Teams manifest's `agentSkills[]`, Microsoft 365 Copilot Cowork
+applies these limits:
+
+| Limit                          | Maximum |
+| ------------------------------ | ------- |
+| Companion files per skill      | 20      |
+| Size per companion file        | 5 MB    |
+| Total companion size per skill | 10 MB   |
+
+`SKILL.md` is required and does not count as one of the 20 companion files. Every other descendant
+file counts, regardless of whether it is in a conventional or custom directory. Each companion-file
+path must also be relative (no absolute paths), free of `..` segments, backslashes, and null bytes;
+not a hidden file (no leading `.` in the filename); not a Windows reserved name (`CON`, `PRN`,
+`AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without an extension); and composed of safe
+filename characters only.
+
+### Declarative-agent limits (`declarativeAgent.json#agent_skills[]`)
+
+A skill referenced only by a declarative agent's `agent_skills[]` uses the DA limits instead: at
+most 8 skills per agent, 350 files across all skills, and directory depth 3.
+
+| Limit                                        | Maximum |
+| -------------------------------------------- | ------- |
+| Skills per declarative agent                 | 8       |
+| Files across all skills                      | 350     |
+| Directory depth                              | 3       |
+| Agent Builder file size                      | 25 MB   |
+| Agent Builder skill ZIP                      | 50 MB   |
+| Agents Toolkit complete application package  | 10 MB   |
+
+Agents Toolkit uses a skill directory and does not state a separate DA skill-level per-file limit.
+The supported file and script types still apply. Cowork's 20-companion limit does not apply to a
+DA-only skill.
+
+If a plugin contains a declarative agent but the skill is registered through the root
+`agentSkills[]`, that root registration remains a Cowork plugin skill. If the same folder is
+registered on both surfaces, it must satisfy both sets of constraints.
+
+These limits and surface distinctions were verified on October 14, 2026 against the
+[Cowork plugin development documentation](https://learn.microsoft.com/microsoft-365/copilot/cowork/cowork-plugin-development),
+the
+[declarative-agent custom skills documentation](https://learn.microsoft.com/microsoft-365/copilot/extensibility/declarative-agent-skills),
+and the [Agent Skills specification](https://agentskills.io/specification).
 
 ## Manifest Shape: `agentSkills[]` (Shipped Today)
 
@@ -411,7 +457,7 @@ which flag state originally produced it.
 | `wiqd agent add skill` fails or produces an incomplete manifest    | WIQD's `agent-skills` flag is disabled | Enable the flag — see [Enable the `agent-skills` Feature Flag First](#enable-the-agent-skills-feature-flag-first) — and re-run the command |
 | Skill never triggers in conversation                               | `description` is too generic, or doesn't contain the phrases users actually say | Rewrite `description` around real trigger phrases, not a summary of the skill's purpose             |
 | Static `wiqd agent validate` passes but the upload still fails     | Static mode (MVL) doesn't check `agentSkills[]` or `SKILL.md` content at all | Run `wiqd agent package` then `wiqd agent validate --mode deep` before publishing                    |
-| Manifest edit didn't produce a working skill                       | `agentSkills[]` was hand-edited without also creating a matching `SKILL.md` folder | Prefer `wiqd agent add skill`; if you must hand-edit, create the folder and the manifest entry together |
+| Manifest edit didn't produce a working skill                       | A skill registration was hand-edited without also creating a matching `SKILL.md` folder | Use `wiqd agent add skill` for `agent_skills[]` or `wiqd plugin add skill` for root `agentSkills[]`; if you must hand-edit, create the folder and the matching entry together |
 | Imported skill (`--from`) behaves differently than expected        | `--from` registers existing content as-is; it does not validate or rewrite the imported `SKILL.md` | Run deep validation after import — the frontmatter contract still applies to imported skills        |
 
 ## Best Practices
@@ -425,20 +471,23 @@ which flag state originally produced it.
 3. **Write `description` for triggering, not for summarizing.** Pack in the actual phrases a user
    would say; a technically-accurate but generic description means the skill may never activate.
 4. **Preserve the intended host scope.** Use `agentSkills[]` for Cowork, `agent_skills[]` for DA
-   Chat, or both when both hosts should load the same folder. `wiqd agent add skill` writes both
-   for its generated flow. For a hand-authored DA-only entry, keep the flag enabled before
-   package/provision rather than adding an unrelated top-level registration. Add
+   Chat, or both when both hosts should load the same folder. Use `wiqd plugin add skill` for the
+   Cowork registration and `wiqd agent add skill` for the DA registration. For a hand-authored
+   DA-only entry, keep the flag enabled before package/provision rather than adding an unrelated
+   top-level registration. Add
    `expose_skill_to_copilot: true` only when that DA behavior is intended.
 5. **Run deep validation before publishing.** Static `wiqd agent validate` cannot see
    `agentSkills[]` or `SKILL.md` content — always follow `wiqd agent package` with
    `wiqd agent validate --mode deep` before a submission. (`wiqd plugin validate --mode deep`
    reaches the same check, but only for a plugin project with its own `wiqd.plugin.json` — not
    this file's audience.)
-6. **Prefer `wiqd agent add skill` over hand-editing.** It creates the folder and the manifest
-   entry together, avoiding the `ASKILL-P001`/`ASKILL-P002` class of mistakes that come from doing
-   these steps separately.
-7. **Mind the platform ceilings.** 20 entries max, 256 characters max per `folder`, no duplicate
-   `folder` values — consolidate rather than sprawl.
+6. **Prefer the matching command over hand-editing.** `wiqd agent add skill` creates the folder and
+   DA registration together; `wiqd plugin add skill` creates the folder and Cowork registration
+   together.
+7. **Mind the host-specific ceilings.** Root Cowork `agentSkills[]` allows at most 20 entries,
+   limits each `folder` value to 256 characters, and rejects duplicate `folder` values. DA
+   `agent_skills[]` allows at most 8 skills per agent. Apply the constraints for each surface where
+   the folder is registered.
 
 ## Related Documentation
 

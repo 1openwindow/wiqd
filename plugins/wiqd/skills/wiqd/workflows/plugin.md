@@ -12,13 +12,15 @@ description: >
   validate → provision / package / publish / share, plus export back out to Open Plugin, Claude,
   or Cursor format, including remote MCP connectors and references to existing OpenAPI custom
   connectors.
-trigger-summary: 'create a plugin, cowork plugin, standalone plugin, reusable plugin, plugin project, build a plugin, plugin with a skill, plugin with a connector, custom connector plugin, openapi connector, MCP plugin project, package a plugin, validate a plugin, publish a plugin, share a plugin, delete a plugin, tear down a plugin, import an open plugin, export to claude, export to cursor, convert a plugin'
+trigger-summary: 'create a plugin, cowork plugin, standalone plugin, reusable plugin, plugin project, build a plugin, plugin with a skill, plugin with a connector, discover connectors, add an existing connector, custom connector plugin, openapi connector, MCP plugin project, package a plugin, validate a plugin, publish a plugin, share a plugin, delete a plugin, tear down a plugin, import an open plugin, export to claude, export to cursor, convert a plugin'
 triggers: >
   create a plugin, create a standalone plugin, new plugin, new plugin project, build a plugin,
   build a standalone plugin, author a plugin, make a reusable plugin, reusable plugin,
   standalone plugin, plugin project, plugin with a skill, plugin with a connector,
   plugin with a custom connector, add an existing custom connector to my plugin,
   add an openapi connector to my plugin, connection vault connector,
+  discover connectors, use an existing catalog connector, add an existing connector to my plugin,
+  add the Azure DevOps connector to my plugin, add Azure DevOps MCP to my plugin,
   cowork plugin, build a cowork plugin, create a cowork plugin, copilot cowork plugin,
   build a plugin for cowork, microsoft copilot plugin, m365 copilot plugin,
   add a skill to my plugin, add a connector to my plugin, add an agent to my plugin,
@@ -43,6 +45,9 @@ routing-requires:
     plugin import,
     plugin add skill,
     plugin add connector,
+    plugin connector list,
+    plugin connector show,
+    plugin connector use,
     plugin add agent,
     plugin validate,
     plugin show,
@@ -62,9 +67,9 @@ Author a **standalone, reusable M365 Copilot plugin** as a first-class, independ
 
 > **Convention:** When calling `wiqd` commands from this skill, always pass `--skill wiqd --workflow plugin`, and add `--json` for any command whose output you need to parse (structured, machine-readable output instead of lossy table text).
 
-> **Terminology — one artifact, many names.** "**Cowork plugin**", "**Copilot Cowork plugin**", "**Microsoft 365 Copilot plugin**", and "**standalone plugin**" all name the **same artifact** this workflow builds: one MOS (Teams) app package. An unqualified "**Copilot plugin**" names that same artifact **whenever the request points at an M365 host surface, or names no host at all**. "Standalone" is a wiqd word that separates a reusable plugin project from a declarative-agent project — it is **not** a platform qualifier. Cowork, Microsoft 365 Copilot chat, Teams, and Office are **host surfaces** for that one package, not separate plugin platforms with their own SDKs. A request to "build a Cowork plugin" belongs **here** — never treat it as out of scope or redirect the user to another toolchain.
+> **Terminology — one artifact, many names.** "**Cowork plugin**", "**Copilot Cowork plugin**", "**Microsoft 365 Copilot plugin**", and "**standalone plugin**" all name the **same artifact** this workflow builds: one Microsoft 365 app package. An unqualified "**Copilot plugin**" names that same artifact **whenever the request points at an M365 host surface, or names no host at all**. "Standalone" is a wiqd word that separates a reusable plugin project from a declarative-agent project — it is **not** a platform qualifier. Cowork, Microsoft 365 Copilot chat, Teams, and Office are **host surfaces** for that one package, not separate plugin platforms with their own SDKs. A request to "build a Cowork plugin" belongs **here** — never treat it as out of scope or redirect the user to another toolchain.
 
-> **Exception — a GitHub Copilot CLI plugin is a different artifact.** When the request names **GitHub Copilot CLI** as the host ("a plugin **for Copilot CLI**", "the **`wiqd@wiqd` plugin**", "install the wiqd Copilot plugin"), it is **not** a MOS app package and `wiqd plugin create` would scaffold the wrong thing. That plugin is a wiqd **component** — the composed skills + guide-agent bundle Copilot CLI itself loads — installed with `wiqd component plugin install`, not authored here. wiqd does not author third-party Copilot CLI plugins: say so and point at the install command instead of scaffolding.
+> **Exception — a GitHub Copilot CLI plugin is a different artifact.** When the request names **GitHub Copilot CLI** as the host ("a plugin **for Copilot CLI**", "the **`wiqd@wiqd` plugin**", "install the wiqd Copilot plugin"), it is **not** a Microsoft 365 app package and `wiqd plugin create` would scaffold the wrong thing. That plugin is a wiqd **component** — the composed skills + guide-agent bundle Copilot CLI itself loads — installed with `wiqd component plugin install`, not authored here. wiqd does not author third-party Copilot CLI plugins: say so and point at the install command instead of scaffolding.
 
 > **Alpha.** The `wiqd plugin` construct is enabled by default. The interface may change without notice.
 
@@ -87,8 +92,8 @@ The words "plugin", "skill", and "import" are all overloaded. Route correctly:
 | The user wants…                                                                                                         | Workflow                        | Why                                                                                                     |
 | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | A **standalone / reusable plugin** as its own deliverable (create, add skill/connector/agent, validate, package, publish/share) | **this `plugin` workflow**      | The artifact is a plugin app package with its own lifecycle, not an agent                               |
-| A **Cowork plugin** / **Microsoft Copilot plugin** / **M365 Copilot plugin** — any **M365** host surface named in the request    | **this `plugin` workflow**      | All the same MOS app package; the surface name is not a different product, SDK, or toolchain            |
-| A **GitHub Copilot CLI plugin** — "a plugin for **Copilot CLI**", the **`wiqd@wiqd`** plugin                           | **neither** — not authored by wiqd | A wiqd **component**, not a MOS app package. Install it with `wiqd component plugin install`; wiqd does not author third-party Copilot CLI plugins |
+| A **Cowork plugin** / **Microsoft Copilot plugin** / **M365 Copilot plugin** — any **M365** host surface named in the request    | **this `plugin` workflow**      | All the same Microsoft 365 app package; the surface name is not a different product, SDK, or toolchain            |
+| A **GitHub Copilot CLI plugin** — "a plugin for **Copilot CLI**", the **`wiqd@wiqd`** plugin                           | **neither** — not authored by wiqd | A wiqd **component**, not a Microsoft 365 app package. Install it with `wiqd component plugin install`; wiqd does not author third-party Copilot CLI plugins |
 | To **convert an existing Open Plugin / Claude / Cursor plugin into a wiqd plugin project**                              | **this `plugin` workflow** → `plugin import` | Cross-**format** conversion producing a whole new plugin project                                         |
 | To convert **a wiqd plugin project out** to Open Plugin / Claude / Cursor format                                        | **this `plugin` workflow** → `plugin export` | Cross-**format** conversion producing an interoperable output directory                                 |
 | To add an **API / MCP plugin capability into one existing declarative agent**                                           | `wiqd-core` workflow → Adding Plugins | There "plugin" means a capability composed _inside_ a single agent's manifest (`actions[]` / MCP)       |
@@ -149,6 +154,11 @@ Then `cd` into the produced project and continue from step 2 exactly as if it ha
 Add whatever the request calls for, in any combination:
 
 ```bash
+# Discover an existing connector and preserve its canonical catalog node.
+wiqd plugin connector list --search "<name>"
+wiqd plugin connector show <selector>
+wiqd plugin connector use <selector> [--folder <dir>]
+
 # A skill (a SKILL.md folder under appPackage/skills/<slug>/, registered in agentSkills[])
 wiqd plugin add skill --name "<Skill Name>" [--folder <dir>]
 
@@ -173,13 +183,15 @@ wiqd plugin add connector --name "<Connector Name>" --description "<what it does
 wiqd plugin add connector --name "<Connector Name>" --description "<what it does>" \
   --url "https://<mcp-server>/mcp" --auth-type dcr
 
-# An existing OpenAPI custom connector. The reference is the logical connector name,
+# An existing OpenAPI custom connector, only when the user explicitly asks for this preview
+# shape and already knows its logical connector name. Never infer or suggest this path from
+# catalog discovery because broad runtime support is not yet established. The reference is
 # not an endpoint, secret, connection instance, OpenAPI file, or operation list.
 # This capability is currently devPreview-only, so the flag explicitly updates both
 # manifestVersion and $schema on a fresh numbered plugin.
 wiqd plugin add connector --kind openapi --name "<Connector Name>" \
   --description "<what the existing custom connector does>" \
-  --auth-reference-id "<logical-name, for example shared_kusto>" --dev-preview
+  --auth-reference-id "<logical-name>" --dev-preview
 
 # A declarative agent component (copilotAgents.declarativeAgents)
 wiqd plugin add agent [--folder <dir>]
@@ -187,13 +199,59 @@ wiqd plugin add agent [--folder <dir>]
 
 Each `add …` updates `wiqd.plugin.json`'s `capabilities` array after its artifacts are written.
 
-Use `--kind openapi` only when the user already has a custom connector and supplies its logical
-name. Do not ask for or invent a URL, OpenAPI file, operations, credentials, or a connection
-instance id: the platform resolves those from `ConnectionVault` at runtime. Do not route this
-request to the declarative-agent `actions[]` OpenAPI-plugin surface; that is a different artifact.
-The preview authoring path does not prove public schema documentation, numbered-manifest support,
-or Store/Partner Center acceptance. Package and deep-validate the result, and report any upstream
-rollout failure rather than rewriting the connector.
+Prefer `plugin connector list/show/use` when the requested connector already exists in the catalog. The catalog
+title ID, connector element ID, display name, and vault reference ID are distinct; never substitute
+one for another in the persisted node. Copy the selector printed by `connector list`; duplicate
+display names for equivalent MCP definitions are deduplicated, while materially different
+same-named connectors receive composite selectors automatically. `connector use` copies the exact
+retained `agentConnectors` node and is limited to
+`remoteMcpServer` nodes using the supported catalog authorization types. Catalog discovery surfaces
+`openApiConnector` nodes for inspection, but they route to the explicit preview path only after user
+confirmation.
+
+#### Conversational connector catalog flow
+
+When the user names an existing connector without supplying a URL — for example, **"Add the Azure
+DevOps connector to my plugin"**:
+
+1. Do **not** ask for an MCP URL, title ID, environment, or vault reference.
+2. Run:
+   ```bash
+   wiqd plugin connector list --search "<user's connector name>" --json --skill wiqd --workflow plugin
+   ```
+3. If exactly one `remoteMcpServer` result matches, copy its `selector` into:
+   ```bash
+   wiqd plugin connector use "<selector>" --folder <plugin-dir> --json --skill wiqd --workflow plugin
+   ```
+   If `use` reports an inline or unavailable tool-description asset, follow its manual
+   `plugin add connector --tool-description <file>` guidance instead of retrying the catalog path.
+4. If exactly one `openApiConnector` result matches, explain that it is preview-only and that broad
+   runtime support is not established. Ask the user to confirm this preview choice. After
+   confirmation, use the result's display name, description, and `referenceId` with:
+   ```bash
+   wiqd plugin add connector --kind openapi --name "<displayName>" \
+     --description "<description>" --auth-reference-id "<referenceId>" \
+     --dev-preview --folder <plugin-dir> --json --skill wiqd --workflow plugin
+   ```
+   Do **not** call `plugin connector use` for an OpenAPI result.
+5. If several results remain, show only their title, connector name, kind, authorization type, and
+   selector, then ask the user to choose one. Never choose by response order.
+6. If no result matches, report that the catalog did not return the named connector. Only then offer the
+   manual `plugin add connector` paths.
+7. After successful composition, run `wiqd plugin validate --path <plugin-dir>` and report the actual
+   validation result.
+
+The selector is the only discovery value the user needs to copy. Catalog title IDs remain provenance
+inside the list/show output and are encoded into composite selectors only when needed for
+disambiguation.
+
+Use `--kind openapi` only after an explicit preview confirmation, with a logical name supplied by the
+user or discovered from a catalog result. Do not ask for or invent a URL, OpenAPI file, operations,
+credentials, or a connection instance id: the platform resolves those from `ConnectionVault` at
+runtime. Do not route this request to the declarative-agent `actions[]` OpenAPI-plugin surface; that
+is a different artifact. The preview authoring path does not prove public schema documentation,
+numbered-manifest support, or Store/Partner Center acceptance. Package and deep-validate the result,
+and report any upstream rollout failure rather than rewriting the connector.
 
 ### 3. Validate
 
@@ -359,7 +417,7 @@ After each step, report the outcome and suggest the logical next action:
 ## Anti-patterns
 
 - ❌ Don't scaffold a `wiqd agent` when the user asked for a **standalone plugin** — that produces an agent, not a reusable plugin.
-- ❌ Don't tell the user a **Cowork plugin** needs a different platform, SDK, or toolchain — it is the same MOS app package this workflow builds (see Terminology). Treating a host surface as a separate product is never a reason to decline.
+- ❌ Don't tell the user a **Cowork plugin** needs a different platform, SDK, or toolchain — it is the same Microsoft 365 app package this workflow builds (see Terminology). Treating a host surface as a separate product is never a reason to decline.
 - ❌ Don't hand-author plugin manifest files — always go through `wiqd plugin add …` so `manifest.json` and `wiqd.plugin.json` stay in sync.
 - ❌ Don't declare a plugin "ready" without a clean `wiqd plugin validate`.
 - ❌ Don't silently enable the alpha flag — tell the user first (Preflight step 2).

@@ -9,15 +9,15 @@ Manage wiqd CLI authentication — sign in, check status, and sign out.
 ### Login
 
 ```bash
-wiqd auth login [--account <email>] [--interactive] --skill wiqd
+wiqd auth login [--interactive] [--tenant <GUID>] --skill wiqd
 ```
 
 Signs in to wiqd and to every extension that contributes an auth provider. Each provider caches its own tokens, so subsequent agent commands work without re-authentication.
 
-| Flag            | Description                                                                                                | Default |
-| --------------- | ---------------------------------------------------------------------------------------------------------- | ------- |
-| `--account`     | Global account hint accepted by the host; provider-specific account selection is not currently implemented | —       |
-| `--interactive` | Force each provider's interactive argument set. Both forms still require real terminal stdin and stdout.   | `false` |
+| Flag              | Description                                                                                                                                 | Default |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `--interactive`   | Allow each provider's interactive path. Both forms still require real terminal stdin and stdout.                                            | `false` |
+| `--tenant <GUID>` | Pass one validated tenant only to runtime providers whose manifest explicitly declares the input; this is not coordinated tenant switching. | —       |
 
 **What happens on login:**
 
@@ -29,12 +29,12 @@ Signs in to wiqd and to every extension that contributes an auth provider. Each 
 
 **Exit codes:**
 
-| Code  | Meaning                                                                                                                                                                        |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `0`   | Every provider signed in and a verified identity was acquired                                                                                                                  |
-| `1`   | At least one provider failed to authenticate                                                                                                                                   |
-| `2`   | Not a real terminal (`AUTH_LOGIN_REQUIRES_TTY`), no auth provider available (`AUTH_LOGIN_NO_PROVIDERS`), or the selected backend is not activated (`selected_backend_missing`) |
-| `130` | Cancelled (Ctrl+C)                                                                                                                                                             |
+| Code  | Meaning                                                                                                                                                                                                                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`   | Every provider signed in and a verified identity was acquired                                                                                                                                                                                                                                    |
+| `1`   | At least one provider failed to authenticate                                                                                                                                                                                                                                                     |
+| `2`   | Invalid tenant input (`AUTH_LOGIN_INVALID_TENANT`), no capable tenant provider (`AUTH_LOGIN_TENANT_UNSUPPORTED`), not a real terminal (`AUTH_LOGIN_REQUIRES_TTY`), no auth provider available (`AUTH_LOGIN_NO_PROVIDERS`), or the selected backend is not activated (`selected_backend_missing`) |
+| `130` | Cancelled (Ctrl+C)                                                                                                                                                                                                                                                                               |
 
 Exit `2` always means the sign-in was never attempted. `wiqd auth login` never
 reports success for an empty provider list — if nothing was signed in, it fails.

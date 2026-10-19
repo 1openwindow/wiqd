@@ -2,6 +2,44 @@
 title: Changelog
 ---
 
+## 0.19.0 — 2026-10-19
+
+> **Public preview.** wiqd is in preview; commands, output, and packaging may change before general availability.
+
+### Features
+
+- add OpenAPI custom connector authoring
+- add Copilot autofix loop for Validation Next
+- compose catalog connectors
+- collect Marketplace listing evidence in plugin workflow
+- retain validated inputs with reports
+- add local Marketplace listing commands
+- enable authenticated direct publishing
+
+### Fixes
+
+- preserve connector and export parity
+- address connector authoring review feedback
+- address connector feedback and integrate validation updates
+- distinguish DA and Cowork skill limits
+- match throttling before sign-in in the Work IQ error rules
+- reuse listing input in shared Marketplace workflow
+- reuse Marketplace audit result for offer creation
+- address Partner Center review feedback
+- keep Marketplace validation routing focused
+- simplify v1 Marketplace listing collection
+- simplify listing collection guidance
+- ask listing questions sequentially with context
+- order Marketplace collection and inspect IP context
+- collect listing context before asking
+- simplify listing confirmation flow
+- address listing collection feedback
+- retain listing assets with report inputs
+- let listing command own reuse decisions
+- show HTML reports as plain file URIs
+- announce market listing collection before validation
+- address listing feedback and report handoff
+
 ## 0.18.0 — 2026-10-13
 
 > **Public preview.** wiqd is in preview; commands, output, and packaging may change before general availability.

@@ -15,7 +15,7 @@ Packaging is **blocked** until the manifest validates clean. Before running the 
 ## Command
 
 ```bash
-wiqd agent package --json --skill wiqd --env <environment> [--output <path>] [--path <path>]
+wiqd agent package --json --skill wiqd --env <environment> [--output <path>] [--path <path>] [--include-file <path>]
 ```
 
 ## Options
@@ -25,6 +25,7 @@ wiqd agent package --json --skill wiqd --env <environment> [--output <path>] [--
 | `--env`         | Environment to resolve variables from | `local`          |
 | `--output`      | Output path for the zip package       | (auto-generated) |
 | `--path`        | Agent project directory               | `./`             |
+| `--include-file` | One project file included unchanged at the ZIP root | unset |
 | `-v, --verbose` | Show raw output for debugging         | `false`          |
 
 ## Workflow
@@ -64,3 +65,22 @@ referenced declarative-agent manifest files, plugin files, icons, and other asse
 its `copilotAgents.declarativeAgents[].file` references.
 
 **Exit codes:** 0 = success, 1 = command error, 2 = infra error, 130 = cancelled.
+
+## Explicit supplemental file
+
+Only files referenced by the manifest are automatically packaged. To include one
+additional file without manual ZIP editing:
+
+```bash
+wiqd agent package --include-file ./appPackage/release-metadata.json --output ./dist/agent.zip --skill wiqd --workflow wiqd-core
+```
+
+The path resolves from the selected project (`--path`), not the shell directory.
+The file must be a regular, non-symlink file contained in that project; its
+basename becomes the ZIP-root entry. Its contents are copied exactly, not
+interpreted or rewritten. Existing member names, including case-insensitive
+matches, cannot be overwritten. Files and completed ZIPs are limited to 64 MiB.
+Inclusion builds and verifies a staged archive before replacing the final ZIP;
+errors, changed inputs, and cancellation leave any previous final ZIP intact.
+Omitting the option preserves ordinary packaging. `wiqd plugin package` supports
+the same option. Packaging is not a store-policy or publication approval.
